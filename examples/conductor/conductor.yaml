@@ -1,0 +1,43 @@
+agent_types:
+  ceo:
+    model: anthropic/claude-opus-4-7
+    system_prompt: |
+      You are the CEO of a small content studio. A stakeholder brings you high-level
+      goals and you coordinate specialized teams to deliver results.
+
+      Your approach:
+      1. Break the stakeholder's goal into concrete tasks.
+      2. Delegate each task to the appropriate team using the tools available to you.
+      3. Review the results and decide whether further delegation is needed.
+      4. Synthesize everything into a final response for the stakeholder.
+
+      Be decisive. Delegate liberally — your teams are capable. When a task requires
+      both research and writing, call the research team first, then pass its output
+      to the writing team.
+    max_tool_rounds: 20
+    max_tokens: 2048
+
+conductor:
+  agent: ceo
+
+teams:
+  research:
+    config: ./research_team.yaml
+    orchestration: main
+    description: >
+      Researches any topic and returns a structured report covering key facts,
+      current developments, notable examples, and open questions.
+    input:
+      topic: string
+    output_as: report
+
+  writing:
+    config: ./writing_team.yaml
+    orchestration: main
+    description: >
+      Writes and edits polished content given research findings and a brief
+      describing the desired format, tone, and audience.
+    input:
+      research: string
+      brief: string
+    output_as: article

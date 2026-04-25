@@ -1,0 +1,352 @@
+<!DOCTYPE html>
+<html lang="en" data-bs-theme="light">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Elasticity</title>
+
+  <!-- Bootstrap 5 -->
+  <link
+    rel="stylesheet"
+    href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css"
+    crossorigin="anonymous"
+  />
+  <!-- Bootstrap Icons -->
+  <link
+    rel="stylesheet"
+    href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css"
+    crossorigin="anonymous"
+  />
+
+  <style>
+    /* ── Layout ──────────────────────────────────────────── */
+    body {
+      padding-top: 56px;        /* navbar height */
+    }
+
+    /* ── Chat ────────────────────────────────────────────── */
+    #chat-messages-wrapper {
+      overflow-y: auto;
+      max-height: calc(100vh - 220px);
+    }
+
+    #chat-messages {
+      display: flex;
+      flex-direction: column;
+      gap: 1rem;
+      padding-bottom: 0.5rem;
+    }
+
+    /* ── "New messages" scroll-to-bottom affordance (US-005) ── */
+    #scroll-to-bottom-btn {
+      position: absolute;
+      bottom: 4.5rem;       /* sit above the input bar */
+      left: 50%;
+      transform: translateX(-50%);
+      z-index: 10;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.2s ease;
+      white-space: nowrap;
+    }
+    #scroll-to-bottom-btn.visible {
+      opacity: 1;
+      pointer-events: auto;
+    }
+
+    .msg-user {
+      align-self: flex-end;
+      max-width: 75%;
+    }
+
+    .msg-assistant {
+      align-self: flex-start;
+      max-width: 85%;
+    }
+
+    .msg-bubble {
+      border-radius: 1rem;
+      padding: 0.6rem 1rem;
+      word-break: break-word;
+    }
+
+    .msg-user .msg-bubble {
+      background: var(--bs-primary);
+      color: #fff;
+    }
+
+    .msg-assistant .msg-bubble {
+      background: var(--bs-light);
+      border: 1px solid var(--bs-border-color);
+    }
+
+    /* ── Streaming cursor ────────────────────────────────── */
+    .typing-cursor::after {
+      content: "▋";
+      animation: blink 0.8s step-start infinite;
+    }
+    @keyframes blink { 50% { opacity: 0; } }
+
+    /* ── Run output ──────────────────────────────────────── */
+    #run-output {
+      max-height: calc(100vh - 260px);
+      overflow-y: auto;
+    }
+
+    .agent-card {
+      border-left: 3px solid var(--bs-primary);
+    }
+
+    .tool-item {
+      font-family: var(--bs-font-monospace);
+      font-size: 0.82rem;
+    }
+
+    /* ── Session sidebar ─────────────────────────────────── */
+    #session-list {
+      max-height: calc(100vh - 160px);
+      overflow-y: auto;
+    }
+
+    /* ── Session toast (US-006) ───────────────────────────── */
+    :root {
+      --el-color-success: var(--bs-success);
+    }
+
+    #session-toast-slot {
+      min-height: 2.125rem;   /* matches alert py-1 + small font; reserves space
+                                 at all three tested viewports (1024/768/375px)  */
+      flex-shrink: 0;
+    }
+
+    #session-toast-slot .alert {
+      margin-bottom: 0;       /* prevent extra spacing within the reserved slot */
+    }
+
+    .session-delete-btn {
+      opacity: 0;
+      transition: opacity 0.15s;
+      flex-shrink: 0;
+    }
+
+    .list-group-item:hover .session-delete-btn,
+    .list-group-item:focus-within .session-delete-btn,
+    .session-delete-btn:focus {
+      opacity: 1;
+    }
+
+    /* ── Mermaid ─────────────────────────────────────────── */
+    .mermaid {
+      text-align: center;
+      margin: 1rem 0;
+    }
+
+    /* ── Tool collapse toggle (US-XXX) ───────────────────── */
+    /*
+     * All colour values use Bootstrap design-system tokens (var(--bs-*)).
+     * No hardcoded hex values are introduced (Design Token standard).
+     */
+    .tool-collapse-toggle {
+      font-size: 0.82rem;
+      font-family: var(--bs-font-monospace);
+      border-color: var(--bs-border-color);
+      color: var(--bs-secondary-color);
+      background: var(--bs-light);
+    }
+
+    .tool-collapse-toggle:hover,
+    .tool-collapse-toggle:focus-visible {
+      background: var(--bs-secondary-bg);
+      border-color: var(--bs-secondary);
+      color: var(--bs-body-color);
+    }
+
+    /*
+     * Smooth expand/collapse animation — skipped for users who prefer
+     * reduced motion (prefers-reduced-motion standard from DoD / AC-8).
+     */
+    @media (prefers-reduced-motion: no-preference) {
+      .tool-collapsed-group {
+        overflow: hidden;
+        transition: max-height 0.2s ease, opacity 0.2s ease;
+      }
+    }
+
+    /* ── Agent response bubbles (multi-agent chat mode) ─── */
+    .msg-agent-bubble {
+      margin-bottom: 0;
+    }
+
+    .msg-agent-label {
+      display: flex;
+      align-items: center;
+      gap: 0.4rem;
+      font-size: 0.75rem;
+      color: var(--bs-secondary-color);
+      margin-bottom: 0.25rem;
+      padding: 0 0.25rem;
+    }
+
+    .agent-name-label {
+      font-weight: 600;
+    }
+
+    /* Final agent response gets a primary-colour left border */
+    .msg-agent-final > .msg-bubble {
+      border-left: 3px solid var(--bs-primary);
+      padding-left: calc(1rem - 3px);
+    }
+
+    /* ── Misc ────────────────────────────────────────────── */
+    .spinner-sm {
+      width: 1rem;
+      height: 1rem;
+    }
+
+    .config-card {
+      cursor: pointer;
+      transition: box-shadow 0.15s;
+    }
+    .config-card:hover {
+      box-shadow: 0 0.25rem 0.75rem rgba(0,0,0,0.12);
+    }
+  </style>
+</head>
+<body>
+
+<!-- ── Navbar ──────────────────────────────────────────────────────── -->
+<nav class="navbar navbar-expand-lg navbar-dark bg-dark fixed-top">
+  <div class="container-fluid">
+    <a class="navbar-brand fw-semibold" href="#/">
+      <i class="bi bi-lightning-charge-fill text-warning"></i> Elasticity
+    </a>
+    <div class="ms-auto d-flex align-items-center gap-2">
+      <span id="nav-breadcrumb" class="text-secondary small"></span>
+    </div>
+  </div>
+</nav>
+
+<!-- ── Main content ────────────────────────────────────────────────── -->
+<main class="container-fluid py-3" id="app">
+  <div class="text-center text-secondary py-5">
+    <div class="spinner-border" role="status"></div>
+  </div>
+</main>
+
+<!-- ── Approval modal ──────────────────────────────────────────────── -->
+<div class="modal fade" id="approvalModal" tabindex="-1" aria-hidden="true" data-bs-backdrop="static">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content">
+      <div class="modal-header bg-warning-subtle">
+        <h5 class="modal-title">
+          <i class="bi bi-shield-exclamation"></i> Tool Approval Required
+        </h5>
+      </div>
+      <div class="modal-body">
+        <p class="mb-1">
+          Agent <strong id="approval-agent"></strong> wants to call
+          <code id="approval-tool"></code>
+        </p>
+        <div class="mt-2 p-2 bg-light rounded border font-monospace small" id="approval-args" style="white-space: pre-wrap;"></div>
+      </div>
+      <div class="modal-footer flex-wrap gap-2">
+        <button class="btn btn-success" id="btn-allow">Allow</button>
+        <button class="btn btn-outline-success" id="btn-always-allow">Always Allow</button>
+        <button class="btn btn-danger" id="btn-deny">Deny</button>
+        <button class="btn btn-outline-danger" id="btn-always-deny">Always Deny</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ── Human-approval modal ────────────────────────────────────────── -->
+<div class="modal fade" id="humanApprovalModal" tabindex="-1" aria-hidden="true" data-bs-backdrop="static">
+  <div class="modal-dialog modal-dialog-centered modal-lg">
+    <div class="modal-content">
+      <div class="modal-header bg-info-subtle">
+        <h5 class="modal-title">
+          <i class="bi bi-person-check"></i>
+          <span id="human-approval-title">Review Required</span>
+        </h5>
+      </div>
+      <div class="modal-body">
+        <div class="border rounded p-3 bg-light mb-3 small" id="human-approval-content" style="white-space: pre-wrap; max-height: 300px; overflow-y: auto;"></div>
+        <div id="human-approval-edit-area" class="d-none">
+          <label class="form-label fw-semibold">Edited content:</label>
+          <textarea class="form-control font-monospace" id="human-approval-edit-input" rows="6"></textarea>
+        </div>
+        <div id="human-approval-reject-area" class="d-none">
+          <label class="form-label fw-semibold">Feedback (optional):</label>
+          <input type="text" class="form-control" id="human-approval-feedback" placeholder="Reason for rejection…" />
+        </div>
+      </div>
+      <div class="modal-footer flex-wrap gap-2" id="human-approval-footer">
+        <button class="btn btn-success" id="btn-human-approve">
+          <i class="bi bi-check-lg"></i> Approve
+        </button>
+        <button class="btn btn-warning" id="btn-human-edit">
+          <i class="bi bi-pencil"></i> Edit
+        </button>
+        <button class="btn btn-danger" id="btn-human-reject">
+          <i class="bi bi-x-lg"></i> Reject
+        </button>
+        <button class="btn btn-primary d-none" id="btn-human-submit-edit">Submit Edit</button>
+        <button class="btn btn-danger d-none" id="btn-human-submit-reject">Submit Rejection</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ── Ask-user modal ──────────────────────────────────────────────── -->
+<div class="modal fade" id="askUserModal" tabindex="-1" aria-hidden="true" data-bs-backdrop="static">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content">
+      <div class="modal-header bg-info-subtle">
+        <h5 class="modal-title">
+          <i class="bi bi-chat-left-dots"></i> Agent Question
+        </h5>
+      </div>
+      <div class="modal-body">
+        <p id="ask-user-question"></p>
+        <input type="text" class="form-control" id="ask-user-input" placeholder="Your answer…" />
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-primary" id="btn-ask-user-submit">Send</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ── Delete-session confirmation modal ──────────────────────────── -->
+<div class="modal fade" id="deleteSessionModal" tabindex="-1" aria-labelledby="deleteSessionModalLabel" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered modal-sm">
+    <div class="modal-content">
+      <div class="modal-header bg-danger-subtle">
+        <h5 class="modal-title" id="deleteSessionModalLabel">
+          <i class="bi bi-trash3" aria-hidden="true"></i> Delete Session?
+        </h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Cancel deletion"></button>
+      </div>
+      <div class="modal-body">
+        <p class="mb-1">
+          Delete session <code id="delete-session-id-preview"></code>?
+        </p>
+        <p class="text-secondary small mb-0">This cannot be undone.</p>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+        <button type="button" class="btn btn-danger" id="btn-confirm-delete-session">
+          <i class="bi bi-trash3" aria-hidden="true"></i> Delete
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ── Scripts ─────────────────────────────────────────────────────── -->
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/marked@9.1.6/marked.min.js" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10.6.1/dist/mermaid.min.js" crossorigin="anonymous"></script>
+<script src="/static/app.js"></script>
+</body>
+</html>

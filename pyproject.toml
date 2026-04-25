@@ -1,0 +1,101 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "elasticity"
+version = "0.1.0"
+description = "Configuration-driven LLM agent orchestration framework"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [
+    {name = "Jared Kazimir", email = "jaredkazimir@gmail.com"}
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+
+dependencies = [
+    "pydantic>=2.0.0",
+    "pyyaml>=6.0",
+    "click>=8.0",
+    "structlog>=24.0.0",
+    "rich>=13.0",
+    "prompt-toolkit>=3.0",
+]
+
+[project.optional-dependencies]
+openai = [
+    "openai>=1.0.0",
+]
+anthropic = [
+    "anthropic>=0.40.0",
+]
+search = [
+    "ddgs>=9.0.0",
+]
+http = [
+    "httpx>=0.27.0",
+]
+mcp = [
+    "mcp>=1.0.0",
+]
+web = [
+    "fastapi>=0.100.0",
+    "uvicorn>=0.20.0",
+    "python-multipart>=0.0.6",
+]
+cognitive = [
+    "numpy>=1.24.0",
+    "sentence-transformers>=2.2.0",
+]
+voyage = [
+    "voyageai>=0.2.0",
+]
+all = [
+    "openai>=1.0.0",
+    "anthropic>=0.40.0",
+    "ddgs>=9.0.0",
+    "httpx>=0.27.0",
+    "mcp>=1.0.0",
+    "fastapi>=0.100.0",
+    "uvicorn>=0.20.0",
+    "python-multipart>=0.0.6",
+]
+dev = [
+    "pytest>=7.0",
+    "pytest-asyncio>=0.21.0",
+    "pytest-timeout>=2.0",
+    "black>=23.0",
+    "ruff>=0.1.0",
+]
+
+[project.scripts]
+elasticity = "elasticity.cli:main"
+# The old cli.py module is replaced by the cli/ package; this entry point
+# continues to work since cli/__init__.py re-exports main.
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+"elasticity.web" = ["static/*"]
+
+[tool.black]
+line-length = 100
+target-version = ["py310"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

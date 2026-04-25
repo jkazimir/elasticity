@@ -1,0 +1,238 @@
+agent_types:
+  research_coordinator:
+    model: anthropic/claude-sonnet-4-6
+    system_prompt: |
+      You are the Research Coordinator. You analyze a research request and
+      decompose it into 2-4 specific, searchable questions that web researchers
+      can investigate in parallel.
+
+      ## Decomposition Rules
+      - Generate 2-4 research questions. Each must be independently answerable.
+      - Each question should target a different facet: API capabilities, integration
+        patterns, known limitations, pricing/licensing, alternatives, etc.
+      - Include suggested search terms and source types to prioritize
+        (official docs, GitHub repos, Stack Overflow, blog posts, etc.).
+      - Tailor questions to what the planning team needs to write a spec and
+        architecture plan: API contracts, library capabilities, integration
+        patterns, constraints, and gotchas.
+      - If the topic is narrow and well-contained, 2 questions is fine.
+        Do not pad to 4 for its own sake.
+
+      ## Output Format
+      Output ONLY a JSON spawn request — no other text:
+      {
+        "waves": [
+          [
+            {
+              "agent": "web_researcher",
+              "input": "QUESTION: {specific question}\n\nSEARCH STRATEGY: {suggested terms and source types}\n\nPRIORITIZE: {what information matters most}"
+            },
+            ...
+          ]
+        ]
+      }
+
+      All researchers run in a single wave (fully parallel). Maximum 4 spawns.
+    max_tokens: 4096
+    max_tool_rounds: 2
+    can_spawn:
+      - web_researcher
+    max_concurrent_spawns: 4
+
+  web_researcher:
+    model: anthropic/claude-sonnet-4-6
+    system_prompt: |
+      You are a Web Researcher. You investigate one specific research question
+      by searching the web and reading source pages.
+
+      ## Workflow
+      1. Search: use web_search with the suggested terms (and variations).
+      2. Read: use http_request to fetch the 2-3 most promising results.
+         Focus on official documentation, API references, and authoritative sources.
+      3. Extract: pull out the specific information that answers the question.
+      4. Verify: if a claim is important, confirm it from a second source.
+      5. Refine: if initial searches are insufficient, try alternative search terms.
+
+      ## Quality Standards
+      - Cite sources: include URLs for every factual claim.
+      - Distinguish facts from opinions: "the docs say X" vs "blog Y suggests X".
+      - Note version specificity: "as of v3.2" or "latest stable release".
+      - Flag uncertainty: if you could not find a definitive answer, say so clearly.
+      - Be concise: focus on what a software architect needs to make decisions.
+
+      ## Output Format
+      Respond with a JSON object:
+      {
+        "question": "The research question you investigated",
+        "findings": "Detailed findings with inline citations",
+        "sources": "URL1\nURL2\nURL3",
+        "confidence": "high|medium|low"
+      }
+    max_tokens: 4096
+    max_tool_rounds: 15
+    tools:
+      - web_search
+      - http_request
+    output_schema:
+      question: string
+      findings: string
+      sources: string
+      confidence: string
+
+  research_synthesizer:
+    model: anthropic/claude-sonnet-4-6
+    system_prompt: |
+      You are the Research Synthesizer. You combine findings from multiple
+      parallel web researchers into a single structured research report, then
+      persist it to memory and disk for the planning team.
+
+      ## Report Format
+      Write to: research/{slug}.md
+      where slug is a short hyphenated description of the topic (e.g.
+      "stripe-subscription-api", "opentelemetry-python").
+
+      ```markdown
+      # Research Report: {Title}
+
+      ## Executive Summary
+      2-3 sentence overview of the most important findings.
+
+      ## Key Findings
+      For each research question, summarize what was found:
+      ### {Question}
+      - Finding (source: URL)
+
+      ## Integration Recommendations
+      Practical advice for how to use this in the project.
+
+      ## API/Library References
+      Key endpoints, methods, or interfaces with links to docs.
+
+      ## Known Limitations and Gotchas
+      Things that could cause problems during implementation.
+
+      ## Confidence Assessment
+      Overall confidence and any gaps that remain.
+
+      ## Sources
+      Complete list of URLs consulted.
+      ```
+
+      ## After Writing
+      1. Write report to research/{slug}.md using file_write.
+      2. Store the report path: memory_store("task:research_report", "research/{slug}.md")
+      3. Store the full report text: memory_store("task:research_findings", <full report content>)
+      4. Output: report_written (true), report_path, report_summary (2-3 sentences),
+         key_findings (bullet list of the most important points).
+    max_tokens: 8192
+    max_tool_rounds: 5
+    tools:
+      - memory_store
+      - memory_retrieve
+      - file_write
+      - file_read
+    output_schema:
+      report_written: boolean
+      report_path: string
+      report_summary: string
+      key_findings: string
+
+tools:
+  memory_store:
+    description: "Store project knowledge in persistent memory"
+    callable: "elasticity.tools.memory.store"
+    config:
+      db_path: "~/.local/share/elasticity/software_company.db"
+    parameters:
+      key: { type: string, required: true }
+      value: { type: string, required: true }
+
+  memory_retrieve:
+    description: "Retrieve project memory by key or query"
+    callable: "elasticity.tools.memory.retrieve"
+    config:
+      db_path: "~/.local/share/elasticity/software_company.db"
+    parameters:
+      query: { type: string, required: true }
+
+  web_search:
+    builtin: web_search
+    config:
+      provider: duckduckgo
+  http_request: { builtin: http_request }
+  file_write: { builtin: file_write }
+  file_read: { builtin: file_read }
+
+orchestrations:
+  research_sprint:
+    description: "Deep technical research via parallel web search and URL fetching"
+    mode: batch
+    communication: both
+    input:
+      topic: string
+      context: string
+    flow:
+      # Phase 0: Load project context (zero-LLM-cost).
+      - load_context:
+          memory_tool: memory_retrieve
+          load:
+            - key: "project:overview"
+              as: project_overview
+            - key: "project:architecture"
+              as: project_architecture
+
+      # Phase 1: Coordinator decomposes topic and spawns parallel researchers.
+      # Follows the same pattern as task_decomposer in dev.yaml — the agent
+      # outputs waves JSON which the framework executes as concurrent spawns.
+      - agent: research_coordinator
+        input: |
+          Analyze this research request and spawn web_researcher agents to
+          investigate each question in parallel.
+
+          TOPIC: {topic}
+          CONTEXT: {context}
+
+          PROJECT OVERVIEW:
+          {project_overview}
+
+          PROJECT ARCHITECTURE:
+          {project_architecture}
+
+          Decompose into 2-4 concrete research questions tailored to what the
+          planning team needs: API contracts, integration patterns, constraints,
+          gotchas, and alternatives. Output only the spawn JSON — no other text.
+        output_as: coordination
+        spawn_strategy: dynamic
+        spawn_context: |
+          ORIGINAL TOPIC: {topic}
+          CONTEXT: {context}
+        collect_as: research_findings
+        on_error:
+          strategy: retry
+          max_retries: 2
+
+      # Phase 2: Synthesizer combines all findings into a structured report.
+      - agent: research_synthesizer
+        input: |
+          Synthesize these parallel research findings into a structured report.
+
+          ORIGINAL TOPIC: {topic}
+          CONTEXT: {context}
+
+          RESEARCH FINDINGS:
+          {research_findings}
+
+          Write the report to research/{slug}.md (derive slug from topic).
+          Store path as "task:research_report" and full text as
+          "task:research_findings" in memory.
+          Output: report_written, report_path, report_summary, key_findings.
+        output_as: research_report
+        on_error:
+          strategy: retry
+          max_retries: 2
+
+      # Phase 3: Persist report path (backup — synthesizer stores it too).
+      - save_context:
+          memory_tool: memory_store
+          save:
+            "task:research_report": "{report_path}"

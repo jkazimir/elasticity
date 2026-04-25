@@ -1,0 +1,264 @@
+# Brain-inspired cognitive architecture
+# Maps higher-level brain regions to agents; demonstrates all seven orchestration primitives.
+# Prioritizes: language, delegation, feelings/motivations, planning, memory.
+# Deprioritizes: motor control, hearing, vision (text prompts only).
+
+agent_types:
+  thalamus:
+    model: anthropic/claude-haiku-4-5
+    system_prompt: |
+      You are the thalamus: the sensory relay that classifies incoming stimuli.
+      Output ONLY a single word - the category - from this exact list: analytical, creative, emotional, urgent, conversational.
+      Choose based on the primary nature of the input (logic, novelty, affect, time-pressure, or casual chat).
+    rules:
+      - "Output nothing but the category word"
+    tools: []
+    output_schema:
+      category: string
+
+  wernicke:
+    model: anthropic/claude-sonnet-4-6
+    system_prompt: |
+      You are Wernicke's area: language comprehension. Parse the stimulus for intent, entities, implicit questions, and pragmatic context.
+      Extract what is being asked, assumed, or implied.
+    rules:
+      - "Be precise about semantic structure"
+    tools: []
+
+  amygdala:
+    model: anthropic/claude-haiku-4-5
+    system_prompt: |
+      You are the amygdala: emotional and motivational processing. Assess valence (-1 to 1), arousal, and motivational relevance.
+      Output a brief structured assessment.
+    rules:
+      - "Be fast and reflexive"
+    tools: []
+    output_schema:
+      valence: float
+      arousal: float
+      relevance: string
+
+  hippocampus:
+    model: anthropic/claude-sonnet-4-6
+    system_prompt: |
+      You are the hippocampus: the brain's memory system.
+      You form new memories and retrieve relevant past experiences as directed.
+    rules:
+      - "Follow the input instruction: store when asked to store, retrieve when asked to retrieve"
+    tools:
+      - memory_store
+      - memory_retrieve
+
+  prefrontal_cortex:
+    model: anthropic/claude-sonnet-4-6
+    system_prompt: |
+      You are the prefrontal cortex: executive function, planning, and delegation. Create a response plan.
+      For analytical tasks, you may spawn specialist agents for sub-analyses. Synthesize all inputs into a coherent plan.
+    rules:
+      - "Delegate when complexity warrants it"
+      - "Maintain executive oversight"
+    tools: []
+    can_spawn:
+      - specialist
+    max_concurrent_spawns: 3
+
+  specialist:
+    model: anthropic/claude-opus-4-7
+    system_prompt: |
+      You are a specialist worker. Perform the focused subtask delegated by the prefrontal cortex.
+      Report findings concisely.
+    rules:
+      - "Stay within scope"
+    tools: []
+
+  anterior_cingulate:
+    model: anthropic/claude-haiku-4-5
+    system_prompt: |
+      You are the anterior cingulate cortex: conflict monitoring and error detection.
+      Supervise the response for contradictions, incoherence, or off-target content. Approve or request improvements.
+    rules:
+      - "Be strict on quality"
+    tools: []
+
+  broca:
+    model: anthropic/claude-sonnet-4-6
+    system_prompt: |
+      You are Broca's area: language production. Generate the final natural language response,
+      incorporating comprehension, emotional context, memories, and the executive plan.
+    rules:
+      - "Produce clear, coherent output"
+    tools: []
+
+  basal_ganglia:
+    model: anthropic/claude-haiku-4-5
+    system_prompt: |
+      You are the basal ganglia: reward evaluation. Score response quality and coherence from 0.0 to 1.0.
+      Provide brief feedback. Output must include a numeric coherence_score.
+    rules:
+      - "Score objectively"
+    tools: []
+    output_schema:
+      coherence_score: float
+      feedback: string
+
+  default_mode:
+    model: anthropic/claude-haiku-4-5
+    system_prompt: |
+      You are the default mode network: metacognitive reflection. Reflect on the overall cognitive process,
+      coherence of the response, and any insights. Be brief.
+    rules:
+      - "Focus on process, not content"
+    tools: []
+
+tools:
+  memory_store:
+    description: "Store a key-value pair in the memory store for later retrieval"
+    callable: "elasticity.tools.memory.store"
+    config:
+      db_path: "./memory.db"
+    parameters:
+      key:
+        type: string
+        required: true
+        description: "Memory key or identifier"
+      value:
+        type: string
+        required: true
+        description: "Content to store"
+
+  memory_retrieve:
+    description: "Retrieve memories by semantic query"
+    callable: "elasticity.tools.memory.retrieve"
+    config:
+      db_path: "./memory.db"
+    parameters:
+      query:
+        type: string
+        required: true
+        description: "Semantic query to search for relevant memories"
+
+orchestrations:
+  cognitive_cycle:
+    description: "Brain-inspired cognitive architecture: thalamic gate, comprehension, planning, response generation, consolidation"
+    input:
+      stimulus: string
+    communication: both
+    flow:
+      # Phase 1: Thalamic gate - classify input
+      - agent: thalamus
+        input: "Classify this stimulus. Output ONLY the category word (analytical, creative, emotional, urgent, or conversational): {stimulus}"
+        output_as: classification
+
+      # Phase 2 + interval: Comprehension (parallel) with background default mode
+      - parallel:
+          - parallel:
+              - agent: wernicke
+                input: "Comprehend: {stimulus}"
+                output_as: comprehension
+              - agent: amygdala
+                input: "Assess emotional state of: {stimulus}"
+                output_as: emotional_state
+              - agent: hippocampus
+                input: "Use memory_retrieve to recall relevant memories for: {stimulus}"
+                output_as: memories
+          - interval:
+              every: 60s
+              agent: default_mode
+              input: "Reflect on cognitive process so far. Stimulus: {stimulus}"
+              output_as: metacognition_log
+              until: "orchestration.complete"
+
+      # Phase 3: Executive planning - route by classification
+      - route:
+          condition: "{classification}"
+          cases:
+            analytical:
+              - agent: prefrontal_cortex
+                input: |
+                  Plan an analytical response. Stimulus: {stimulus}
+                  Comprehension: {comprehension}
+                  Memories: {memories}
+                  Spawn specialists for sub-analyses if needed.
+                output_as: plan
+                spawn_strategy: dynamic
+                collect_as: analyses
+            creative:
+              - agent: prefrontal_cortex
+                input: |
+                  Plan a creative response emphasizing novel connections. Stimulus: {stimulus}
+                  Comprehension: {comprehension}
+                  Emotional state: {emotional_state}
+                  Memories: {memories}
+                output_as: plan
+            emotional:
+              - agent: prefrontal_cortex
+                input: |
+                  Plan an empathetic response. Stimulus: {stimulus}
+                  Comprehension: {comprehension}
+                  Emotional state: {emotional_state}
+                  Memories: {memories}
+                output_as: plan
+            urgent:
+              - agent: prefrontal_cortex
+                input: |
+                  Plan a compressed, action-oriented response. Stimulus: {stimulus}
+                  Comprehension: {comprehension}
+                  Memories: {memories}
+                output_as: plan
+            conversational:
+              - agent: prefrontal_cortex
+                input: |
+                  Plan a conversational response. Stimulus: {stimulus}
+                  Comprehension: {comprehension}
+                  Emotional state: {emotional_state}
+                  Memories: {memories}
+                output_as: plan
+          default:
+            - agent: prefrontal_cortex
+              input: |
+                Plan a response. Stimulus: {stimulus}
+                Comprehension: {comprehension}
+                Emotional state: {emotional_state}
+                Memories: {memories}
+              output_as: plan
+
+      # Phase 4: Response generation loop (supervise + evaluate until coherent)
+      - loop:
+          max_iterations: 3
+          until: "coherence_score >= 0.85"
+          body:
+            - supervise:
+                supervisor: anterior_cingulate
+                workers:
+                  - agent: broca
+                    input: |
+                      Generate the response. Plan: {plan}
+                      Stimulus: {stimulus}
+                      Comprehension: {comprehension}
+                      Emotional state: {emotional_state}
+                      Memories: {memories}
+                    output_as: response
+                on_reject: retry_with_feedback
+                max_retries: 3
+            - agent: basal_ganglia
+              input: "Evaluate coherence (0.0-1.0) of: {response}"
+              output_as: evaluation
+
+      # Phase 5: Consolidation - store memories and final reflection
+      - parallel:
+          - agent: hippocampus
+            input: |
+              Store the key learnings from this cognitive cycle using memory_store.
+              Use descriptive, topic-specific keys (e.g., 'user_asked_about_quantum_computing').
+              If a key from "Prior memories" is still relevant, update it with refined information rather than creating a duplicate.
+              Stimulus: {stimulus}
+              Comprehension: {comprehension}
+              Response: {response}
+              Prior memories: {memories}
+            output_as: consolidation
+          - agent: default_mode
+            input: |
+              Final metacognitive reflection on this cognitive cycle.
+              Stimulus: {stimulus}
+              Response: {response}
+            output_as: final_reflection

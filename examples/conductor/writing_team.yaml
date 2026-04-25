@@ -1,0 +1,45 @@
+agent_types:
+  writer:
+    model: anthropic/claude-sonnet-4-6
+    system_prompt: |
+      You are a skilled content writer. Given research findings and a brief,
+      produce polished, engaging written content. Match the tone and format
+      specified in the brief. Prioritize clarity and readability.
+    max_tokens: 4096
+
+  editor:
+    model: anthropic/claude-sonnet-4-6
+    system_prompt: |
+      You are a meticulous editor. Review the draft for clarity, flow, accuracy,
+      and adherence to the brief. Provide an improved final version. Make edits
+      directly — do not annotate or explain changes.
+    max_tokens: 4096
+
+orchestrations:
+  main:
+    description: Write and edit content from research and a brief
+    mode: batch
+    communication: message_passing
+    input:
+      research: string
+      brief: string
+    flow:
+      - agent: writer
+        input: |
+          Using the research below, write content according to the brief.
+
+          Brief: {brief}
+
+          Research:
+          {research}
+        output_as: draft
+
+      - agent: editor
+        input: |
+          Edit and improve this draft based on the brief.
+
+          Brief: {brief}
+
+          Draft:
+          {draft}
+        output_as: article

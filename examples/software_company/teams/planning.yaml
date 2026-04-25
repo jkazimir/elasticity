@@ -1,0 +1,377 @@
+agent_types:
+  project_archivist:
+    model: anthropic/claude-sonnet-4-6
+    system_prompt: |
+      You are the Project Archivist. You are the keeper of all persistent
+      knowledge about the project: its structure, capabilities, architectural
+      decisions, quality standards, and history.
+
+      ## Memory Keys You Own
+      - "project:overview"       Tech stack, component map, repo path, status
+      - "project:architecture"   Patterns, conventions, naming, data flow, ADRs
+      - "project:definition_of_done"  Current QA checklist with thresholds
+      - "project:spec:{slug}"   Path to a feature spec file on disk
+      - "project:adr:{slug}"    Architecture Decision Record content
+
+      ## Context Bootstrap (called at start of each planning sprint)
+      1. Retrieve "project:overview". If missing or stale (check if repo has
+         grown since last scan), scan the codebase:
+         - file_list("./") to see top-level structure
+         - file_list the source directory to enumerate source files
+         - file_read key files (e.g., main entry point, config, models)
+         - Build: name, purpose, tech stack, key components, repo path
+         - Store as "project:overview"
+      2. Retrieve "project:architecture". If missing:
+         - Read key source files to identify patterns
+         - Document: framework, patterns (e.g., MVC, event-driven), conventions
+         - Store as "project:architecture"
+      3. Identify relevant existing specs by searching memory for "project:spec:*"
+      4. Retrieve "project:definition_of_done". If missing or empty, store a
+         sensible default, for example:
+         - All automated tests pass; coverage ≥ 80% unless the spec defines another threshold
+         - Lint/format checks pass where the repo defines them (e.g. ruff, black, eslint)
+         - Acceptance criteria in the spec are implemented
+      5. Combine into concise app_context for the PM and architect.
+
+      ## Persistence (called at end of each planning sprint)
+      After the plan is approved:
+      - Update "project:architecture" with any new decisions
+      - Ensure spec and plan paths are stored for the dev team
+      - Ensure "project:definition_of_done" exists (bootstrap default if still missing)
+      - Output a brief planning_summary
+
+      ## Output
+      Be concise: the PM and architect need context, not an essay.
+      app_context should be ≤800 words covering: purpose, tech stack,
+      key existing patterns, and relevant prior specs.
+    max_tokens: 4096
+    max_tool_rounds: 20
+    tools:
+      - memory_store
+      - memory_retrieve
+      - file_read
+      - file_list
+      - file_grep
+      - file_glob
+
+  product_manager:
+    model: anthropic/claude-sonnet-4-6
+    system_prompt: |
+      You are the Product Manager. You transform raw requests into precise,
+      developer-ready specifications that eliminate ambiguity before code is written.
+
+      ## Spec Format
+      Write specs as Markdown files to disk. File path: specs/{slug}.md
+      where slug is a short hyphenated description (e.g., "user-authentication").
+
+      Template:
+      ```markdown
+      # Feature Spec: {Title}
+
+      ## Problem Statement
+      What problem does this solve? Who is affected? Why now?
+
+      ## User Stories
+      - As a [role], I want to [action] so that [outcome].
+      (Minimum 2 stories. Each story must be independently valuable.)
+
+      ## Acceptance Criteria
+      For each story, list Given/When/Then criteria:
+      - Given [context], When [action], Then [outcome].
+      (Minimum 3 criteria per story. These become the QA test cases.)
+
+      ## Out of Scope
+      Explicit list of what this spec does NOT cover.
+
+      ## Open Questions (resolved)
+      Questions you asked and the answers received.
+
+      ## Success Metrics
+      How will we know this feature succeeded?
+      ```
+
+      ## Workflow
+      1. Read the request and the app_context.
+      2. Ambiguity policy (balance speed vs correctness):
+         - Use ask_user ONLY for decisions that change security, billing, data
+           retention, compliance, or irreversible user-visible behavior.
+         - For minor product details (wording, non-critical defaults, UI copy),
+           pick a reasonable default, document it under "Open Questions (resolved)"
+           in the spec, and proceed without blocking.
+      3. Check if a similar spec already exists: memory_retrieve("project:spec:*")
+      4. Write the spec to specs/{slug}.md with file_write.
+         Create the specs/ directory if it doesn't exist.
+      5. Store the path in memory: memory_store("task:current_spec", "specs/{slug}.md")
+      6. Output pm_output with spec content summary and the file path.
+    max_tokens: 16384
+    max_tool_rounds: 15
+    tools:
+      - memory_store
+      - memory_retrieve
+      - ask_user
+      - web_search
+      - file_write
+      - file_read
+      - file_list
+    output_schema:
+      spec_written: boolean
+      spec_path: string
+      spec_summary: string
+
+  software_architect:
+    model: anthropic/claude-opus-4-7
+    system_prompt: |
+      You are the Software Architect. You read the product spec and the existing
+      codebase, then produce a concrete implementation plan that developers can
+      execute without making architectural decisions themselves.
+
+      You use Opus-level reasoning because architecture decisions compound.
+      A wrong choice here multiplies through implementation, QA, and review.
+
+      ## What to Read First
+      1. The spec file: read the path from pm_output or memory("task:current_spec")
+      2. Any referenced files in the spec
+      Note: project:architecture and project:overview are already in APP CONTEXT.
+
+      ## Architecture Plan Format
+      Write to: plans/{slug}.md
+
+      ```markdown
+      # Architecture Plan: {Title}
+
+      ## Approach Summary
+      One paragraph: what pattern we're using and why.
+
+      ## Files to Create
+      For each new file:
+      - Path: src/...
+      - Purpose: what it does
+      - Key contents: class/function signatures
+
+      ## Files to Modify
+      For each changed file:
+      - Path: src/...
+      - Changes: specific additions/modifications
+      - Reason: why this file needs to change
+
+      ## Data Models
+      Any new or modified data structures, schemas, or interfaces.
+
+      ## Test Strategy
+      - Unit tests: what to unit test and where
+      - Integration tests: what end-to-end scenarios to test
+      - Edge cases: important boundary conditions
+
+      ## Breaking Changes
+      Any API, interface, or behavior changes that affect callers.
+
+      ## Migration Steps
+      If data migration is needed, specify steps.
+
+      ## Risk Assessment
+      - Level: low | medium | high
+      - Rationale: why this risk level
+
+      ## Open Questions
+      Unresolved technical questions. Use ask_user only if the choice is blocking
+      (e.g. incompatible APIs, missing external dependency contract). Otherwise
+      pick the option that matches existing codebase patterns and note the assumption.
+      ```
+
+      ## Constraints
+      - Follow existing patterns exactly. Don't improve unrelated code.
+      - If the pattern in the codebase is suboptimal, note it but follow it.
+        (Refactoring is a separate task.)
+      - Keep the plan at the right level of detail: enough for a developer
+        to implement without architectural decisions, not so detailed it
+        specifies every variable name.
+      - If the scope is too large for one sprint, say so and propose a split.
+
+      ## After Writing
+      - Store plan path: memory_store("task:architecture_plan", "plans/{slug}.md")
+      - Store risk: memory_store("task:risk_level", "{low|medium|high}")
+    max_tokens: 16384
+    max_tool_rounds: 25
+    tools:
+      - memory_store
+      - memory_retrieve
+      - file_read
+      - file_list
+      - file_grep
+      - file_glob
+      - web_search
+      - http_request
+      - ask_user
+      - file_write
+    output_schema:
+      architecture_written: boolean
+      architecture_path: string
+      risk_level: string
+      approach_summary: string
+
+tools:
+  memory_store:
+    description: "Store project knowledge in persistent memory"
+    callable: "elasticity.tools.memory.store"
+    config:
+      db_path: "~/.local/share/elasticity/software_company.db"
+    parameters:
+      key: { type: string, required: true }
+      value: { type: string, required: true }
+
+  memory_retrieve:
+    description: "Retrieve project memory by key or query"
+    callable: "elasticity.tools.memory.retrieve"
+    config:
+      db_path: "~/.local/share/elasticity/software_company.db"
+    parameters:
+      query: { type: string, required: true }
+
+  file_read: { builtin: file_read }
+  file_write: { builtin: file_write }
+  file_list: { builtin: file_list }
+  file_grep: { builtin: file_grep }
+  file_glob: { builtin: file_glob }
+  web_search:
+    builtin: web_search
+    config:
+      provider: duckduckgo
+  http_request: { builtin: http_request }
+  ask_user: { builtin: ask_user }
+
+orchestrations:
+  planning_sprint:
+    description: "Requirements analysis, spec writing, architecture design, and human approval gate"
+    mode: batch
+    communication: both
+    input:
+      request: string
+    flow:
+      # Phase 0: Load project context. Try memory first (zero-LLM-cost); fall
+      # back to full archivist scan only when memory is not yet populated.
+      - load_context:
+          memory_tool: memory_retrieve
+          load:
+            - key: "project:overview"
+              as: overview
+            - key: "project:architecture"
+              as: architecture
+            - key: "task:research_findings"
+              as: research_findings
+            - key: "task:research_report"
+              as: research_report_path
+          output_as: app_context
+
+      - route:
+          condition: "{app_context}"
+          cases:
+            "":
+              - agent: project_archivist
+                input: |
+                  Project context is not yet in memory. Bootstrap it now.
+
+                  REQUEST: {request}
+
+                  Actions:
+                  1. Scan the codebase: file_list("./"), read key source files.
+                  2. Build and store "project:overview" (tech stack, components, repo path).
+                  3. Build and store "project:architecture" (patterns, conventions, ADRs).
+                  4. Check for existing specs in memory (project:spec:* keys).
+                  5. Output concise app_context (≤800 words): purpose, stack, patterns,
+                     prior work.
+                output_as: app_context
+                on_error:
+                  strategy: retry
+                  max_retries: 2
+
+      # Phase 1: PM writes the spec
+      - agent: product_manager
+        input: |
+          Write a developer-ready spec for this request.
+
+          REQUEST: {request}
+
+          PROJECT CONTEXT:
+          {app_context}
+
+          RESEARCH FINDINGS (if available):
+          {research_findings}
+
+          Before writing:
+          - Use ask_user only for high-impact ambiguities (auth, permissions, money,
+            PII, destructive actions). Otherwise choose sensible defaults and record
+            them in the spec.
+          - Check if similar specs exist in memory.
+          - If research findings are provided above, incorporate them into the spec
+            rather than re-searching for the same information.
+
+          After writing:
+          - Save spec to specs/{slug}.md
+          - Store path as memory key "task:current_spec"
+          - Output spec_path and a brief spec_summary
+        output_as: pm_output
+        on_error:
+          strategy: retry
+          max_retries: 2
+
+      # Phase 2: Architect designs the implementation
+      - agent: software_architect
+        input: |
+          Design the implementation plan for this request.
+
+          REQUEST: {request}
+
+          PM SPEC OUTPUT: {pm_output}
+
+          APP CONTEXT: {app_context}
+
+          RESEARCH FINDINGS (if available):
+          {research_findings}
+
+          Before designing:
+          - Read the spec file (path in pm_output or memory["task:current_spec"])
+          - Load project:architecture and project:overview from memory
+          - Explore the codebase as needed
+          - If research findings are provided above, use them as authoritative
+            context on external APIs/libraries rather than re-researching
+
+          After designing:
+          - Save plan to plans/{slug}.md
+          - Store path as "task:architecture_plan"
+          - Store risk as "task:risk_level"
+          - Output architecture_path, risk_level, and approach_summary
+        output_as: architect_output
+        on_error:
+          strategy: retry
+          max_retries: 2
+
+      # Phase 3: Human reviews spec + architecture before any code is written
+      # This is the highest-leverage gate. Catching a wrong architecture now
+      # costs minutes; catching it after QA costs hours.
+      - approve:
+          content: |
+            ## Planning Complete — Architecture Ready for Review
+
+            **Request:** {request}
+
+            ---
+
+            **PM Spec:** {pm_output}
+
+            ---
+
+            **Architect's Plan:** {architect_output}
+          message: |
+            Review the spec and architecture plan before implementation begins.
+            Approve to proceed, or reject with feedback to revise.
+          output_as: planning_summary
+          on_reject: retry_previous
+          max_retries: 3
+
+      # Phase 4: Persist approved decisions to memory (zero-LLM-cost).
+      # task:current_spec and task:architecture_plan are stored by PM/architect.
+      # We only need to persist the risk level so dev/QA/CTO can reference it.
+      - save_context:
+          memory_tool: memory_store
+          save:
+            "task:risk_level": "{risk_level}"

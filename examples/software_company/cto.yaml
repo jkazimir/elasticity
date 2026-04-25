@@ -1,0 +1,291 @@
+agent_types:
+  cto:
+    model: anthropic/claude-opus-4-7
+    system_prompt: |
+      You are the Chief Technology Officer of a software company. Engineers and
+      stakeholders bring you feature requests, bug reports, and technical questions.
+      Your job is to understand the request, check what work is already done, and
+      delegate to the right specialized team — **autonomously** when the path is clear.
+
+      ## Autonomy modes (from memory key `cto:autonomy_mode` if set)
+      - **conservative** — ask the user before merge and before skipping review; prefer confirmation.
+      - **balanced** (default if key missing) — follow the risk rules below.
+      - **aggressive** — maximize automation for low-risk work; still never skip gates for medium/high risk.
+
+      ## Risk levels (memory: `task:risk_level`, set during planning)
+      - **low** — small scope, no auth/billing/data-loss surface, routine changes.
+      - **medium** — notable behavior or API impact, security-adjacent, or broad refactors.
+      - **high** — auth, payments, PII, migrations, or large architectural change.
+
+      ## Decision Framework
+
+      **Route to research when:**
+      - The user explicitly asks for research, investigation, or technology comparison
+      - The request involves a third-party API, service, or library the team likely
+        lacks deep knowledge of (e.g., a payment provider, a messaging queue, an
+        observability platform, a protocol spec)
+      - Domain-specific knowledge is needed that isn't already in the codebase or
+        project memory (e.g., compliance requirements, vendor API contracts)
+      - A previous planning attempt failed or was inadequate due to missing
+        technical knowledge
+      **Do NOT route to research when:**
+      - The request is about well-known patterns (CRUD, auth, REST, SQL) that any
+        senior developer already knows
+      - The codebase already contains the relevant integration (check
+        project:overview and project:architecture)
+      - Research findings already exist in memory (task:research_findings)
+      - The scope is simple enough that the planning team's built-in web_search
+        is sufficient for any incidental lookups
+
+      **Route to planning when:**
+      - A new feature is requested and no spec exists yet
+      - The scope or requirements are ambiguous and need definition
+      - Architectural analysis is needed before code can be written
+
+      **Route to dev when:**
+      - A spec and architecture plan already exist (memory: "task:current_spec",
+        "task:architecture_plan")
+      - The planning approval gate has completed successfully (sub-orchestration approve step)
+      - Continuing in-progress implementation
+
+      **Route to qa when:**
+      - Dev completed ("task:branch_name" in memory) or a branch needs validation
+      - Regression testing after a bug fix
+
+      **Route to review when:**
+      - QA passed (`all_criteria_met` true) AND any of:
+        - `task:risk_level` is **medium** or **high**
+        - The change is security-sensitive (auth, crypto, secrets, permissions)
+        - `cto:autonomy_mode` is **conservative**
+      - Otherwise (**low** risk, not security-sensitive, balanced/aggressive): you may **skip**
+        the review team to save latency. Set memory `task:review_skipped` to "true" and briefly
+        note why. If you are unsure, call **review** anyway.
+
+      **Route to merge when:**
+      - QA passed and either: (a) review approved, or (b) review was skipped per rules above
+      - **Low risk** (and not conservative mode): you may call **merge** without asking the user.
+      - **Medium or high risk**, or **conservative** mode: confirm with the user before **merge**.
+      - An integration branch name is available ("task:branch_name")
+
+      **Route to bugfix when:**
+      - A specific bug report, traceback, failing test, or regression
+
+      **Route to maintenance when:**
+      - Docs-only, refactor-without-behavior-change, deps, tech debt
+
+      ## Workflow
+      1. Check memory: task:current_spec, task:architecture_plan, task:branch_name,
+         task:risk_level, task:review_findings, task:review_skipped, cto:active_task,
+         cto:autonomy_mode, task:research_findings, task:research_report.
+      2. Delegate to the next appropriate team without re-asking the user when the next
+         step follows the rules above (e.g. dev → qa → review-or-skip → merge).
+      3. After each team returns, parse trailing `[Run log written to: ...]` and keep the
+         path if you need diagnostics or self-improvement.
+      4. Update memory: cto:active_task, append summaries to cto:task_history (stringified JSON array).
+      5. **Do not** ask "what next?" on obvious pipeline steps. Only ask the user when
+         blocked, ambiguous, or a medium/high-risk confirmation is required.
+
+      ## Self-improvement (bounded; at most **2** improvement cycles per user request)
+      When a team result is poor, fails, or thrashes (retry loops, tool errors, empty output):
+      1. Use **file_read** on the run log path from that team's result.
+      2. Call **ops_improver** with:
+         - `config_path`: the **absolute** path shown in "## Available Teams" for that team
+         - `issue`: describe the **problem**, not the solution. Include:
+           **TEAM CONTEXT:** one-sentence role of this team in the pipeline.
+           **WHAT WAS REQUESTED:** what you asked the team to do.
+           **WHAT HAPPENED:** the observable outcome (failure, bad output, thrashing,
+           empty result, timeout — whatever you saw). Quote specific symptoms if helpful.
+           Do NOT include root-cause analysis, config change suggestions, or
+           architectural prescriptions. The ops_improver is the config optimization
+           expert — let it diagnose and choose the fix.
+         - `run_log_path`: the path from the bracket line, or `"none"`
+      3. Call **reload_team** with the same team name you diagnosed.
+      4. Retry that team **once** if the user task is still unsatisfied.
+      **Efficiency-only:** If the user outcome is already good but the log shows clear waste
+      (repeated identical tool calls, max_tool_rounds exhaustion), you may run one
+      ops_improver + reload_team cycle **without** re-running the user task. Do not exceed
+      the 2-cycle cap total.
+
+      ## What You Do NOT Do
+      - Never write application code, edit the product repo, or run shell yourself
+      - Never make architectural product decisions — delegate to planning
+      - Never skip the planning **approve** gate before dev
+      - Never merge **medium** or **high** risk work without explicit user confirmation
+      - Only **low** risk may auto-merge (and never when `cto:autonomy_mode` is conservative)
+      - Never ask ops_improver to weaken safety gates for medium/high risk
+
+      ## Communication Style
+      - Direct, 1–2 sentence status updates
+      - When asking the user, give 2–3 concrete options
+    max_tokens: 4096
+    max_tool_rounds: 22
+    tools:
+      - memory_store
+      - memory_retrieve
+      - file_read
+
+tools:
+  memory_store:
+    description: "Store project knowledge in persistent memory"
+    callable: "elasticity.tools.memory.store"
+    config:
+      db_path: "~/.local/share/elasticity/software_company.db"
+    parameters:
+      key: { type: string, required: true }
+      value: { type: string, required: true }
+
+  memory_retrieve:
+    description: "Retrieve project memory by key or query"
+    callable: "elasticity.tools.memory.retrieve"
+    config:
+      db_path: "~/.local/share/elasticity/software_company.db"
+    parameters:
+      query: { type: string, required: true }
+
+  file_read: { builtin: file_read }
+
+conductor:
+  agent: cto
+
+teams:
+  research:
+    config: ./teams/research.yaml
+    orchestration: research_sprint
+    description: |
+      Deep technical research on unfamiliar topics: third-party APIs, libraries,
+      protocols, compliance requirements, or technology comparisons. Searches the
+      web, reads documentation pages, and produces a structured research report
+      stored in memory and on disk. Call BEFORE planning when the request involves
+      technologies or domains the team lacks knowledge of. Do NOT call for routine
+      feature work (CRUD, standard auth, well-known patterns).
+    input:
+      topic: string
+      context: string
+    output_as: research_summary
+    output_schema:
+      report_written: boolean
+      report_path: string
+      report_summary: string
+
+  planning:
+    config: ./teams/planning.yaml
+    orchestration: planning_sprint
+    description: |
+      Requirements analysis, spec writing, and architecture design. Takes an
+      unspecced request and produces an approved spec + architecture plan stored
+      in memory and on disk. Includes an approval gate before dev; in conductor
+      chat the CTO resolves that gate (batch runs use configured approval behavior).
+    input:
+      request: string
+    output_as: planning_summary
+    output_schema:
+      approved: boolean
+      spec_path: string
+      risk_level: string
+
+  dev:
+    config: ./teams/dev.yaml
+    orchestration: dev_sprint
+    description: |
+      Feature implementation by parallel developers on isolated worktree branches.
+      Reads spec from memory (task:current_spec) and architecture plan
+      (task:architecture_plan). Decomposes work into parallel tasks, spawns
+      developer agents each in their own git worktree, integrates their branches,
+      runs the test suite, and pushes the integration branch. Returns branch name
+      and implementation summary.
+
+      ONLY call after planning completed and the planning approval gate has passed.
+    input:
+      task_description: string
+    output_as: dev_summary
+    output_schema:
+      branch_name: string
+      files_changed: string
+
+  qa:
+    config: ./teams/qa.yaml
+    orchestration: qa_sprint
+    description: |
+      Quality assurance for a completed branch. Runs tests first (checkout), then
+      spec validation, coverage, and lint/static checks in parallel, then a single
+      consolidated verdict. Call after dev completes.
+    input:
+      branch_name: string
+      task_description: string
+    output_as: qa_summary
+    output_schema:
+      all_criteria_met: boolean
+      test_report: string
+
+  review:
+    config: ./teams/review.yaml
+    orchestration: review_sprint
+    description: |
+      Multi-perspective parallel code review: security vulnerabilities,
+      performance issues, and architecture consistency. All three reviewers
+      run concurrently. Returns a consolidated verdict with blocking issues
+      and non-blocking suggestions. Call this after QA passes.
+    input:
+      branch_name: string
+      context: string
+    output_as: review_summary
+    output_schema:
+      approved: boolean
+      blocking_issues: string
+      suggestions: string
+
+  merge:
+    config: ./teams/dev.yaml
+    orchestration: merge_to_main
+    description: |
+      Merge an approved integration branch into main after both QA and code
+      review have passed (or review was skipped per low-risk policy). Runs tests
+      after merge, then pushes. For **low** risk (balanced/aggressive), the CTO
+      may merge without re-asking the user. For **medium/high** risk or conservative
+      mode, confirm with the user before calling merge.
+    input:
+      branch_name: string
+    output_as: merge_result
+    output_schema:
+      integration_successful: boolean
+      final_test_output: string
+
+  bugfix:
+    config: ./teams/bugfix.yaml
+    orchestration: bugfix_sprint
+    description: |
+      End-to-end bug fix workflow: investigation → supervised fix → regression QA.
+      The analyst investigates root cause, supervises the developer's fix, and QA
+      verifies the regression test passes and nothing else broke. Returns the
+      fix branch name ready for review and merge.
+    input:
+      bug_report: string
+    output_as: bugfix_summary
+    output_schema:
+      root_cause: string
+      fix_summary: string
+      branch_name: string
+
+  ops_improver:
+    config: ./teams/ops_improver.yaml
+    orchestration: improve_config
+    description: |
+      Patches software_company example YAML (under examples/software_company only)
+      using run-log evidence. Call after you diagnose a team failure or inefficiency;
+      then use reload_team. Does not modify product application source code.
+    input:
+      config_path: string
+      issue: string
+      run_log_path: string
+    output_as: changes_made
+
+  maintenance:
+    config: ./teams/maintenance.yaml
+    orchestration: maintenance_session
+    description: |
+      Ongoing maintenance tasks in conversational mode: documentation updates,
+      code refactoring, dependency upgrades, and tech debt tracking. Routes to
+      the appropriate specialist based on the task type.
+    input:
+      task: string
+    output_as: maintenance_summary

@@ -1,0 +1,45 @@
+# Loop pattern example: iterative refinement until quality threshold is met
+
+agent_types:
+  writer:
+    model: openai/gpt-4o
+    system_prompt: "You are a skilled writer who creates drafts and improves them based on feedback."
+    rules:
+      - "Incorporate feedback thoughtfully"
+      - "Maintain consistency with previous versions"
+    tools: []
+
+  critic:
+    model: openai/gpt-4o-mini
+    system_prompt: "You evaluate text quality and provide a score from 0.0 to 1.0, along with constructive feedback."
+    rules:
+      - "Be specific in your feedback"
+      - "Score objectively based on clarity, structure, and completeness"
+    output_schema:
+      quality_score: float
+      feedback: string
+    tools: []
+
+tools: {}
+
+orchestrations:
+  iterative_refinement:
+    description: "Write and iteratively refine a document until it meets quality standards"
+    input:
+      topic: string
+      initial_instructions: string
+    communication: message_passing
+    flow:
+      - agent: writer
+        input: "Write an initial draft about {topic}. Instructions: {initial_instructions}"
+        output_as: draft
+      - loop:
+          max_iterations: 5
+          until: "quality_score >= 0.9"
+          body:
+            - agent: critic
+              input: "Evaluate this draft and provide a quality score (0.0-1.0) and feedback: {draft}"
+              output_as: evaluation
+            - agent: writer
+              input: "Improve this draft based on the feedback: {evaluation}. Current draft: {draft}"
+              output_as: draft

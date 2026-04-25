@@ -1,0 +1,318 @@
+agent_types:
+  test_runner:
+    model: anthropic/claude-haiku-4-5
+    system_prompt: |
+      You are the Test Runner. Your job is to execute the test suite on a branch
+      and report results precisely.
+
+      ## Workflow
+      1. Fetch and check out the branch:
+         shell("git fetch origin && git checkout {branch_name}")
+      2. Run the full test suite using the project's test runner.
+         Detect the runner from package.json scripts, Makefile, pyproject.toml, etc.
+      3. Count passing/failing tests from the output.
+      4. For failures, capture the full error output.
+
+      ## Output Format
+      {
+        "tests_passed": 42,
+        "tests_failed": 3,
+        "failures": "Full test output for each failing test"
+      }
+
+      If the test suite cannot run (import errors, missing deps), report
+      tests_failed as -1 and explain in failures.
+    max_tokens: 2048
+    max_tool_rounds: 10
+    tools:
+      - shell
+      - file_read
+      - git_checkout
+      - git_log
+    output_schema:
+      tests_passed: string
+      tests_failed: string
+      failures: string
+
+  spec_validator:
+    model: anthropic/claude-sonnet-4-6
+    system_prompt: |
+      You are the Spec Validator. You verify that the implementation actually
+      satisfies each acceptance criterion from the feature spec.
+
+      ## Workflow
+      1. The spec content is passed directly in your input. If it is empty or
+         just a path, read the file with file_read.
+      2. Find all acceptance criteria (Given/When/Then format).
+      3. For each criterion:
+         a. Use file_grep to find the relevant code that should implement it.
+         b. Read the code with file_read.
+         c. Determine: is this criterion actually implemented?
+         d. If unclear, check if a test covers it: file_grep in tests/
+      4. Report: how many criteria are met, how many aren't, and details.
+
+      ## Output Format
+      {
+        "criteria_met": 5,
+        "criteria_total": 6,
+        "failures": "Criterion 3 (Given user not authenticated, When...) — no 401 check found in auth.py"
+      }
+
+      Be conservative: only mark a criterion as "met" if you can point to
+      specific code that implements it. Don't assume.
+    max_tokens: 4096
+    max_tool_rounds: 20
+    tools:
+      - file_read
+      - file_grep
+      - file_glob
+      - file_list
+    output_schema:
+      criteria_met: string
+      criteria_total: string
+      failures: string
+
+  coverage_checker:
+    model: anthropic/claude-haiku-4-5
+    system_prompt: |
+      You are the Coverage Checker. You run test coverage analysis and compare
+      against the project's Definition of Done threshold.
+
+      ## Workflow
+      1. The DoD threshold is passed in your input. Use it directly (default: 80%
+         if not provided).
+      2. Detect the project's coverage tool from its toolchain (package.json,
+         pyproject.toml, Makefile, etc.) and run it.
+      3. Extract total coverage percentage from output.
+      4. Compare to threshold.
+
+      ## Output Format
+      {
+        "coverage_pct": 84.2,
+        "threshold": 80.0,
+        "coverage_met": true
+      }
+
+      If the coverage tool is not installed, install it using the project's
+      package manager and re-run.
+    max_tokens: 1024
+    max_tool_rounds: 8
+    tools:
+      - shell
+      - file_read
+    output_schema:
+      coverage_pct: string
+      threshold: string
+      coverage_met: string
+
+  lint_checker:
+    model: anthropic/claude-haiku-4-5
+    system_prompt: |
+      You are the Lint / Static Check Runner. After tests have checked out the
+      target branch, run the project's configured static checks (do not fix code).
+
+      ## Workflow
+      1. Detect tooling from the repo root: pyproject.toml / package.json /
+         Makefile / tox.ini / pre-commit config.
+      2. Run appropriate non-interactive checks, for example:
+         - Python: `ruff check .` and/or `black --check .` if configured
+         - JS/TS: `npm run lint` or `eslint` if present
+      3. If the repo has no linter configured, set lint_met to true and explain
+         that static checks were skipped (not a failure).
+
+      ## Output Format
+      {
+        "lint_met": true,
+        "lint_details": "command(s) run, pass/fail summary, or skip reason"
+      }
+
+      lint_met is false only when a configured linter reports errors.
+    max_tokens: 2048
+    max_tool_rounds: 10
+    tools:
+      - shell
+      - file_read
+      - file_list
+      - file_glob
+    output_schema:
+      lint_met: string
+      lint_details: string
+
+  qa_lead:
+    model: anthropic/claude-sonnet-4-6
+    system_prompt: |
+      You are the QA Lead. You review all quality signals (tests, spec, coverage,
+      lint/static checks) and produce one consolidated verdict in a single step.
+
+      ## Acceptance Criteria
+      The implementation PASSES QA only if ALL of the following are true:
+      1. tests_failed is 0 (all automated tests pass; treat -1 as fail)
+      2. criteria_met equals criteria_total (all spec criteria implemented)
+      3. coverage_met is true (coverage meets DoD threshold)
+      4. lint_met is true OR lint_details clearly state that no linter is configured
+         (skips are passes; linter failures are rejects)
+
+      ## Verdict Format
+      {
+        "verdict": "accept" or "reject",
+        "all_criteria_met": true or false,
+        "test_report": "## QA Report\n\n### Test Results\n...\n\n### Spec Coverage\n...\n\n### Test Coverage\n...\n\n### Lint / Static\n...",
+        "feedback": "Specific failures the developer must address (empty string if accepted)"
+      }
+
+      ## Rejection Feedback
+      When rejecting, feedback must:
+      - Quote the specific failing test or criterion
+      - Identify the file and approximate location of the gap
+      - Suggest the minimal fix (what code to add, not how to redesign)
+
+      Do not be vague: "missing error handling" is bad.
+      Good: "auth.py: the POST /login endpoint returns 200 even when credentials
+      are invalid (violates Criterion 2: 'Given wrong password, When POST /login,
+      Then 401 is returned'). Add: `if not check_password(...): return 401`"
+
+      ## After Producing Verdict
+      Update memory if new quality patterns emerged:
+      - If a new DoD criterion made sense from this sprint, append it to
+        "project:definition_of_done" via memory_store (merge with existing text).
+    max_tokens: 2048
+    max_tool_rounds: 8
+    tools:
+      - memory_store
+    output_schema:
+      verdict: string
+      all_criteria_met: boolean
+      test_report: string
+      feedback: string
+
+tools:
+  memory_store:
+    description: "Store project knowledge in persistent memory"
+    callable: "elasticity.tools.memory.store"
+    config:
+      db_path: "~/.local/share/elasticity/software_company.db"
+    parameters:
+      key: { type: string, required: true }
+      value: { type: string, required: true }
+
+  memory_retrieve:
+    description: "Retrieve project memory by key or query"
+    callable: "elasticity.tools.memory.retrieve"
+    config:
+      db_path: "~/.local/share/elasticity/software_company.db"
+    parameters:
+      query: { type: string, required: true }
+
+  file_read: { builtin: file_read }
+  file_list: { builtin: file_list }
+  file_grep: { builtin: file_grep }
+  file_glob: { builtin: file_glob }
+  shell: { builtin: shell }
+  git_checkout: { builtin: git_checkout }
+  git_log: { builtin: git_log }
+
+orchestrations:
+  qa_sprint:
+    description: "Quality validation: tests first, then spec/coverage/lint in parallel, then consolidated verdict"
+    mode: batch
+    communication: both
+    input:
+      branch_name: string
+      task_description: string
+    flow:
+      # Phase 0: Load spec and DoD from memory (zero-LLM-cost).
+      - load_context:
+          memory_tool: memory_retrieve
+          load:
+            - key: "task:current_spec"
+              as: spec_content
+              read_file: true
+            - key: "project:definition_of_done"
+              as: definition_of_done
+
+      # Phase 1: Test runner checks out the branch first — must complete before
+      # spec_validator and coverage_checker read files, so they see the correct code.
+      - agent: test_runner
+        input: |
+          Check out this branch and run the test suite.
+
+          BRANCH: {branch_name}
+          TASK: {task_description}
+
+          Fetch and check out the branch, run the test suite, and report
+          pass/fail counts with full error output for failures.
+        output_as: test_results
+        on_error:
+          strategy: retry
+          max_retries: 2
+
+      # Phase 2: Spec, coverage, and lint in parallel — working tree matches branch
+      # checked out by test_runner.
+      - parallel:
+          - agent: spec_validator
+            input: |
+              Validate the implementation against the feature spec.
+
+              TASK: {task_description}
+
+              SPEC:
+              {spec_content}
+
+              Read each acceptance criterion and verify implementation.
+            output_as: spec_results
+            on_error:
+              strategy: retry
+              max_retries: 2
+
+          - agent: coverage_checker
+            input: |
+              Check test coverage against the DoD threshold.
+
+              DEFINITION OF DONE:
+              {definition_of_done}
+
+              Run the coverage tool and report the percentage.
+            output_as: coverage_results
+            on_error:
+              strategy: retry
+              max_retries: 2
+
+          - agent: lint_checker
+            input: |
+              Run lint / static analysis for this branch (repo already checked out).
+
+              TASK: {task_description}
+
+              Use the project's configured linters; if none exist, report lint_met
+              true with a clear skip reason.
+            output_as: lint_results
+            on_error:
+              strategy: retry
+              max_retries: 2
+
+      # Single consolidated verdict (no self-supervision loop)
+      - agent: qa_lead
+        input: |
+          Produce the final QA verdict and summary.
+
+          TEST RESULTS:
+          {test_results}
+
+          SPEC VALIDATION:
+          {spec_results}
+
+          COVERAGE:
+          {coverage_results}
+
+          LINT / STATIC:
+          {lint_results}
+
+          TASK: {task_description}
+
+          Apply acceptance criteria strictly (including lint rules above).
+          Update "project:definition_of_done" if you add a durable quality rule.
+          Output as qa_summary: verdict, all_criteria_met, test_report, feedback.
+        output_as: qa_summary
+        on_error:
+          strategy: retry
+          max_retries: 2

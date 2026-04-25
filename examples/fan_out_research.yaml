@@ -1,0 +1,54 @@
+# Parallel execution example: research multiple aspects of a topic in parallel
+
+agent_types:
+  economics_researcher:
+    model: openai/gpt-4o
+    system_prompt: "You are a research agent specializing in economic analysis."
+    rules:
+      - "Focus on economic implications and market dynamics"
+    tools: []
+
+  history_researcher:
+    model: openai/gpt-4o
+    system_prompt: "You are a research agent specializing in historical context."
+    rules:
+      - "Focus on historical background and evolution"
+    tools: []
+
+  technology_researcher:
+    model: openai/gpt-4o
+    system_prompt: "You are a research agent specializing in technical details."
+    rules:
+      - "Focus on technical specifications and implementation"
+    tools: []
+
+  synthesizer:
+    model: openai/gpt-4o
+    system_prompt: "You synthesize information from multiple sources into a coherent overview."
+    rules:
+      - "Identify common themes and connections"
+      - "Highlight key insights from each source"
+    tools: []
+
+tools: {}
+
+orchestrations:
+  fan_out_research:
+    description: "Research multiple aspects of a topic in parallel, then synthesize"
+    input:
+      topic: string
+    communication: message_passing
+    flow:
+      - parallel:
+          - agent: economics_researcher
+            input: "Research the economic aspects of {topic}"
+            output_as: econ_research
+          - agent: history_researcher
+            input: "Research the historical context of {topic}"
+            output_as: hist_research
+          - agent: technology_researcher
+            input: "Research the technical details of {topic}"
+            output_as: tech_research
+      - agent: synthesizer
+        input: "Synthesize these research findings into a comprehensive overview:\nEconomic: {econ_research}\nHistorical: {hist_research}\nTechnical: {tech_research}"
+        output_as: synthesis

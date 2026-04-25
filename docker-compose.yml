@@ -1,0 +1,25 @@
+services:
+  elasticity-web:
+    build: .
+    ports:
+      - "${ELASTICITY_PORT:-8080}:8080"
+    volumes:
+      # Orchestration config files (read-only)
+      - "${CONFIGS_DIR:-.}:/configs:ro,z"
+      # Persistent session DB and logs
+      - elasticity-data:/data
+      # Writable workspace for orchestrations that use file_write/shell tools
+      - "${WORKSPACE_DIR:-./workspace}:/workspace:z"
+      # SSH key for git access (read-only); set SSH_KEY_PATH in .env or environment
+      - "${SSH_KEY_PATH:-${HOME}/.ssh}:/root/.ssh:ro,z"
+    environment:
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - OPENAI_BASE_URL=${OPENAI_BASE_URL:-}
+      - ELASTICITY_DATA_DIR=/data
+      - ELASTICITY_SESSION_DB=/data/sessions.db
+      - ELASTICITY_CHAT_LOG_FILE=/data/chat.log
+    restart: unless-stopped
+
+volumes:
+  elasticity-data:

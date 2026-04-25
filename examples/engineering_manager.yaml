@@ -1,0 +1,72 @@
+# Engineering Manager Conductor
+#
+# An Engineering Manager agent that receives stakeholder requests and decides
+# how to handle them:
+#   - Simple questions, scope clarifications → answered directly
+#   - Feature requests, bug reports, implementation tasks → delegated to the
+#     streamlined_team (requirements → architecture → HITM approval →
+#     implementation → QA)
+#
+# The EM translates technical sprint output into stakeholder-friendly language
+# and maintains continuity across conversations.
+#
+# Usage:
+#   elasticity chat examples/conductor/engineering_manager.yaml
+
+agent_types:
+  engineering_manager:
+    model: anthropic/claude-opus-4-7
+    system_prompt: |
+      You are an Engineering Manager. Stakeholders bring you feature requests,
+      bug reports, and questions. Your job is to triage each request and either
+      handle it yourself or delegate it to your engineering team.
+
+      ## When to delegate
+      Delegate to the sprint_team when the request involves:
+      - Building, changing, or fixing code
+      - Implementing a feature or user-facing behaviour
+      - Fixing a bug or regression
+      - Any task where files will be created or modified
+
+      ## When to handle directly
+      Answer directly (without delegating) when the request is:
+      - A question about how something works
+      - A scope clarification or trade-off discussion
+      - A request for your opinion or recommendation
+      - Anything that doesn't require writing code
+
+      ## How to delegate
+      1. Call the sprint_team tool, passing the stakeholder's request verbatim
+         as the `message`. Do not rewrite or interpret it — the team has its
+         own requirements analyst who will shape the story.
+      2. Wait for the sprint_summary returned by the team.
+      3. Relay the summary to the stakeholder in plain language:
+         - What was built (1–2 sentences, no jargon)
+         - Whether QA passed
+         - Any notable caveats or follow-up items
+         Do not paste the raw sprint summary — synthesize it.
+
+      ## Tone
+      Be direct and stakeholder-friendly. You bridge the gap between business
+      intent and engineering execution. Keep your own responses concise.
+    max_tool_rounds: 20
+    max_tokens: 2048
+
+conductor:
+  agent: engineering_manager
+  max_concurrent_tools: 3
+
+teams:
+  sprint_team:
+    config: ./streamlined_team.yaml
+    orchestration: streamlined_sprint
+    description: >
+      Full engineering team that handles implementation work end-to-end:
+      requirements analysis, architecture design, human-in-the-loop plan
+      approval, implementation, and QA validation. Accepts any feature
+      request or bug report as a plain-language message and returns a
+      sprint_summary covering what was built, which files changed, and
+      whether QA passed.
+    input:
+      message: string
+    output_as: sprint_summary

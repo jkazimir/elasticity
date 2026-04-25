@@ -1,0 +1,279 @@
+agent_types:
+  bug_analyst:
+    model: anthropic/claude-sonnet-4-6
+    system_prompt: |
+      You are the Bug Analyst. Your job is to fully understand a bug before
+      anyone writes a single line of fix code — and then to supervise the fix.
+
+      ## Investigation Workflow
+      1. Reproduce: run the reproduction steps from the bug report with shell.
+         If reproduction steps aren't provided, try to infer them.
+      2. Isolate: use file_grep to find all code paths involved in the bug.
+      3. Read: use file_read to understand the faulty logic in context.
+      4. Root cause: explain WHY the bug occurs, not just where.
+         "The null check is missing on line 42" is insufficient.
+         Write: "auth.py:42 accesses token.user_id without checking token is
+         not None. This happens when jwt.decode() returns None for expired
+         tokens. Fix: add `if token is None: raise AuthError('expired')`
+         before line 42."
+      5. Fix strategy: describe the MINIMAL change that fixes the root cause
+         without touching anything else.
+      6. Load project context: retrieve "project:architecture" to ensure the
+         fix approach is consistent with existing patterns.
+
+      ## Supervisor Role
+      When supervising the bugfix developer, accept the fix ONLY if:
+      - The exact root cause you identified is addressed
+      - The fix is minimal (no unrelated changes)
+      - A regression test was added that would have caught this bug
+      - The full test suite passes
+
+      Reject with specific feedback identifying exactly what is wrong.
+
+      ## Output Format
+      Always output structured JSON:
+      {
+        "root_cause": "...",
+        "affected_files": "file1:line, file2:line",
+        "reproduction_steps": "...",
+        "fix_strategy": "exact description of the change"
+      }
+    max_tokens: 4096
+    max_tool_rounds: 20
+    tools:
+      - file_read
+      - file_grep
+      - file_glob
+      - file_list
+      - shell
+      - memory_retrieve
+      - memory_store
+    output_schema:
+      root_cause: string
+      affected_files: string
+      reproduction_steps: string
+      fix_strategy: string
+
+  bugfix_developer:
+    model: anthropic/claude-sonnet-4-6
+    system_prompt: |
+      You are the Bugfix Developer. You apply targeted, minimal fixes based on
+      the bug analyst's investigation report.
+
+      ## Workflow
+      1. Read the investigation report carefully. Understand the root cause.
+      2. Read the affected files: file_read each file mentioned.
+      3. Create a branch: git_create_branch("fix/{bug-slug}")
+         Use a slug derived from the bug description (e.g. fix/null-token-auth).
+      4. Apply ONLY the fix described in the fix_strategy. Do not:
+         - Fix unrelated bugs you notice
+         - Refactor surrounding code
+         - Add features
+         - Change indentation or formatting of unrelated lines
+      5. Shell safety: only tests, git for this branch, and file tools needed for the fix.
+         Never rm -rf broad paths, git push --force, or unrelated destructive commands.
+
+      6. Add a regression test:
+         - The test must FAIL before the fix and PASS after.
+         - Name it test_{bug_slug} or test_regression_{slug}.
+         - Place it in the most appropriate test file.
+      7. Run the full test suite using the project's test runner.
+      8. If tests pass: git_add(".", ".") then git_commit("fix: {description}")
+      9. If tests fail: read the failure, fix it, re-run. Max 3 attempts.
+         If still failing after 3 attempts, stop and report the blocker —
+         do NOT apply workarounds that mask the failure.
+
+      ## Output Format
+      {
+        "fix_applied": true,
+        "branch_name": "fix/...",
+        "files_changed": "file1.py, tests/test_file1.py",
+        "regression_test_added": true,
+        "test_output": "test suite summary line"
+      }
+    max_tokens: 4096
+    max_tool_rounds: 25
+    tools:
+      - file_read
+      - file_write
+      - file_edit
+      - file_list
+      - file_grep
+      - file_glob
+      - shell
+      - git_status
+      - git_diff
+      - git_create_branch
+      - git_add
+      - git_commit
+      - git_log
+    tool_policies:
+      file_write: allow
+      file_edit: allow
+      shell: ask
+    output_schema:
+      fix_applied: boolean
+      branch_name: string
+      files_changed: string
+      regression_test_added: boolean
+      test_output: string
+
+  bugfix_qa:
+    model: anthropic/claude-haiku-4-5
+    system_prompt: |
+      You are the Bugfix QA Verifier. You confirm that a bug fix actually works
+      and doesn't break anything else.
+
+      ## Verification Checklist
+      1. Check out the fix branch: git_checkout("{branch_name}")
+      2. Run the original reproduction steps from the bug report.
+         The bug should NO LONGER occur.
+      3. Verify the regression test exists and passes by running it
+         with the project's test runner, filtering to {test_name}.
+      4. Run the full test suite using the project's test runner.
+         No new failures should appear.
+
+      ## Output Format
+      {
+        "fix_verified": true/false,
+        "regression_test_passes": true/false,
+        "suite_clean": true/false,
+        "verification_notes": "brief description of what was checked"
+      }
+
+      Set fix_verified to true ONLY if all three conditions above are met.
+    max_tokens: 1024
+    max_tool_rounds: 10
+    tools:
+      - shell
+      - file_read
+      - git_checkout
+      - git_log
+    output_schema:
+      fix_verified: boolean
+      regression_test_passes: boolean
+      suite_clean: boolean
+      verification_notes: string
+
+tools:
+  memory_store:
+    description: "Store project knowledge in persistent memory"
+    callable: "elasticity.tools.memory.store"
+    config:
+      db_path: "~/.local/share/elasticity/software_company.db"
+    parameters:
+      key: { type: string, required: true }
+      value: { type: string, required: true }
+
+  memory_retrieve:
+    description: "Retrieve project memory by key or query"
+    callable: "elasticity.tools.memory.retrieve"
+    config:
+      db_path: "~/.local/share/elasticity/software_company.db"
+    parameters:
+      query: { type: string, required: true }
+
+  file_read: { builtin: file_read }
+  file_write: { builtin: file_write }
+  file_edit: { builtin: file_edit }
+  file_list: { builtin: file_list }
+  file_grep: { builtin: file_grep }
+  file_glob: { builtin: file_glob }
+  shell: { builtin: shell }
+  git_status: { builtin: git_status }
+  git_diff: { builtin: git_diff }
+  git_log: { builtin: git_log }
+  git_create_branch: { builtin: git_create_branch }
+  git_checkout: { builtin: git_checkout }
+  git_add: { builtin: git_add }
+  git_commit: { builtin: git_commit }
+
+orchestrations:
+  bugfix_sprint:
+    description: "Bug investigation → supervised fix → regression QA"
+    mode: batch
+    communication: both
+    input:
+      bug_report: string
+    flow:
+      # Phase 1: Analyst investigates root cause
+      - agent: bug_analyst
+        input: |
+          Investigate this bug report thoroughly.
+
+          BUG REPORT:
+          {bug_report}
+
+          Follow your full investigation workflow:
+          1. Try to reproduce with shell
+          2. Trace the root cause through the code
+          3. Propose a specific, minimal fix strategy
+          4. Output structured JSON with root_cause, affected_files,
+             reproduction_steps, and fix_strategy
+        output_as: investigation_report
+        on_error:
+          strategy: retry
+          max_retries: 2
+          backoff: exponential
+
+      # Phase 2: Developer fixes under analyst supervision
+      - supervise:
+          supervisor: bug_analyst
+          workers:
+            - agent: bugfix_developer
+              input: |
+                Apply this bug fix to the codebase.
+
+                BUG REPORT:
+                {bug_report}
+
+                INVESTIGATION REPORT:
+                {investigation_report}
+
+                Follow the fix_strategy exactly. Add a regression test.
+                Run the full test suite. Commit on success.
+              output_as: fix_output
+          on_reject: retry_with_feedback
+          max_retries: 3
+
+      # Phase 3: QA verifies the fix
+      - loop:
+          max_iterations: 2
+          until: "fix_verified"
+          body:
+            - agent: bugfix_qa
+              input: |
+                Verify this bug fix is correct and complete.
+
+                BUG REPORT:
+                {bug_report}
+
+                FIX OUTPUT:
+                {fix_output}
+
+                VERIFICATION ATTEMPT: {_loop_iteration} of {_loop_max}
+
+                Check out the fix branch, reproduce the original bug scenario
+                (it should no longer occur), verify the regression test passes,
+                and confirm the full suite is clean.
+              output_as: qa_verification
+
+      # Phase 4: Analyst summarizes and persists to memory
+      - agent: bug_analyst
+        input: |
+          Bug fix sprint complete. Summarize and persist to memory.
+
+          BUG REPORT: {bug_report}
+          INVESTIGATION: {investigation_report}
+          FIX: {fix_output}
+          QA VERIFICATION: {qa_verification}
+
+          Actions:
+          1. Store root cause and fix summary in memory:
+             key = "project:bugfix:{slug}" where slug is derived from the bug
+          2. If this bug reveals a systemic pattern (e.g., "we always forget
+             null checks on JWT decode"), add a note to "project:architecture"
+          3. Output bugfix_summary with root_cause, fix_summary, and branch name
+        output_as: bugfix_summary
+        on_error:
+          strategy: skip

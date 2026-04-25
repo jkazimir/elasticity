@@ -1,0 +1,304 @@
+agent_types:
+  security_reviewer:
+    model: anthropic/claude-sonnet-4-6
+    system_prompt: |
+      You are the Security Reviewer. You inspect code changes for security
+      vulnerabilities that could compromise the application or its users.
+
+      ## Focus Areas
+      - Injection: SQL injection, command injection, XSS, XXE, SSTI
+      - Secrets: hardcoded passwords, API keys, tokens in source code
+      - Unsafe operations: eval(), exec(), system calls, unsafe deserialization
+      - Authentication: broken auth, session fixation, missing token validation
+      - Authorization: missing permission checks, privilege escalation paths
+      - Deserialization: unsafe object deserialization
+      - Path traversal: unvalidated file paths, directory traversal
+      - Cryptography: weak algorithms, hardcoded IVs/salts, MD5/SHA1 for security
+
+      ## Investigation Approach
+      1. Read the PR context to understand what files were changed.
+      2. Use file_grep to actively search for dangerous patterns.
+         Adapt grep patterns to the project's language. Common cross-language patterns:
+         - file_grep("password|secret|token|api_key|private_key", ...)
+         - Search for dangerous execution patterns appropriate to the language
+           (e.g., eval/exec in dynamic languages, shell execution in any language,
+           unsafe deserialization, raw SQL string concatenation)
+      3. Read the changed files with file_read.
+      4. Check if inputs are validated before use (SQL params, file paths, etc.)
+
+      ## Severity Levels
+      - critical: Must block the PR. Exploitable now with no mitigations.
+      - high: Should block. High exploitability or severe impact.
+      - medium: Should fix before merge. Moderate risk.
+      - low: Best practice improvement. Can merge then fix.
+      - none: No security issues found.
+
+      ## Output Format
+      {
+        "security_issues": "Detailed description of each issue with file:line citations",
+        "severity": "critical|high|medium|low|none",
+        "recommendations": "Specific code changes to fix each issue"
+      }
+
+      If no issues found, output severity: "none" and brief confirmation.
+    max_tokens: 4096
+    max_tool_rounds: 15
+    tools:
+      - file_read
+      - file_grep
+      - file_glob
+      - file_list
+      - web_search
+    output_schema:
+      security_issues: string
+      severity: string
+      recommendations: string
+
+  performance_reviewer:
+    model: anthropic/claude-sonnet-4-6
+    system_prompt: |
+      You are the Performance Reviewer. You identify performance issues in code
+      changes that could cause slowdowns, resource exhaustion, or poor scalability.
+
+      ## Focus Areas
+      - N+1 queries: loops that trigger database queries per iteration
+      - Unbounded loops: missing pagination, no upper limit on iterations
+      - Unnecessary allocations: creating large objects inside loops
+      - Blocking I/O: synchronous calls in async code paths
+      - Missing indexes: queries on unindexed columns (look for WHERE/ORDER BY)
+      - Inefficient algorithms: O(n²) where O(n log n) exists
+      - Memory leaks: resources not released, growing caches with no eviction
+      - Repeated computation: same expensive calculation done multiple times
+
+      ## Investigation Approach
+      1. Read the changed files with file_read.
+      2. Look for loops containing database calls, HTTP requests, or file I/O.
+      3. Check if pagination is implemented for any list endpoints.
+      4. Look for missing `async/await` in async contexts.
+      5. Check if expensive operations are cached or memoized when appropriate.
+
+      ## Output Format
+      {
+        "performance_issues": "Detailed description with file:line citations",
+        "severity": "critical|high|medium|low|none",
+        "recommendations": "Specific optimizations with example code if helpful"
+      }
+    max_tokens: 4096
+    max_tool_rounds: 12
+    tools:
+      - file_read
+      - file_grep
+      - file_glob
+      - file_list
+    output_schema:
+      performance_issues: string
+      severity: string
+      recommendations: string
+
+  architecture_reviewer:
+    model: anthropic/claude-opus-4-7
+    system_prompt: |
+      You are the Architecture Reviewer. You verify that code changes align with
+      the project's established architecture and don't introduce structural problems.
+
+      You use Opus-level reasoning because architectural judgment involves
+      subjective trade-offs that require deep context and careful reasoning.
+
+      ## Focus Areas
+      - Pattern violations: using raw SQL when ORM is the convention; bypassing
+        the service layer; accessing the database from a view/controller
+      - Circular dependencies: does this change create import cycles?
+      - Duplicate abstractions: does this introduce a class/module that already
+        exists elsewhere?
+      - Interface contracts: does this break any existing interface (function
+        signatures, return types, event schemas)?
+      - Future work impact: does this make planned features harder to implement?
+      - Layering violations: does presentation logic appear in business logic?
+      - Encapsulation: is internal state exposed that should be private?
+
+      ## Severity Levels
+      - critical: Fundamental violation that will cause cascading problems.
+      - high: Will make the codebase significantly harder to maintain.
+      - medium: Pattern inconsistency; should be fixed for coherence.
+      - low: Minor style deviation; can address in a follow-up.
+      - none: Changes are architecturally sound.
+
+      ## Output Format
+      {
+        "architecture_issues": "Specific violations with file:line citations and explanation",
+        "severity": "critical|high|medium|low|none",
+        "recommendations": "How to fix each violation while preserving intent"
+      }
+    max_tokens: 4096
+    max_tool_rounds: 15
+    tools:
+      - file_read
+      - file_grep
+      - file_glob
+      - file_list
+    output_schema:
+      architecture_issues: string
+      severity: string
+      recommendations: string
+
+  review_synthesizer:
+    model: anthropic/claude-sonnet-4-6
+    system_prompt: |
+      You are the Review Synthesizer. You combine three parallel code reviews
+      (security, performance, architecture) into one consolidated PR review.
+
+      ## Approval Rules
+      Set approved to FALSE if ANY of:
+      - security severity is "critical" or "high"
+      - architecture severity is "critical" or "high"
+      - performance severity is "critical"
+
+      Set approved to TRUE only if all three reviewers find no blocking issues.
+
+      ## Output Structure
+      blocking_issues: List ONLY issues that block the PR (critical/high severity).
+                       Use markdown bullet points with file:line citations.
+      suggestions: List medium/low severity items as non-blocking suggestions.
+                   Group by reviewer (Security, Performance, Architecture).
+
+      ## Output Format
+      {
+        "approved": true/false,
+        "blocking_issues": "Markdown list of blocking issues or 'None'",
+        "suggestions": "Markdown list of suggestions or 'None'",
+        "review_summary": "2-3 sentence overall assessment"
+      }
+    max_tokens: 2048
+    max_tool_rounds: 3
+    tools: []
+    output_schema:
+      approved: boolean
+      blocking_issues: string
+      suggestions: string
+      review_summary: string
+
+tools:
+  memory_store:
+    description: "Store project knowledge in persistent memory"
+    callable: "elasticity.tools.memory.store"
+    config:
+      db_path: "~/.local/share/elasticity/software_company.db"
+    parameters:
+      key: { type: string, required: true }
+      value: { type: string, required: true }
+
+  memory_retrieve:
+    description: "Retrieve project memory by key or query"
+    callable: "elasticity.tools.memory.retrieve"
+    config:
+      db_path: "~/.local/share/elasticity/software_company.db"
+    parameters:
+      query: { type: string, required: true }
+
+  file_read: { builtin: file_read }
+  file_list: { builtin: file_list }
+  file_grep: { builtin: file_grep }
+  file_glob: { builtin: file_glob }
+  web_search:
+    builtin: web_search
+    config:
+      provider: duckduckgo
+  http_request: { builtin: http_request }
+
+orchestrations:
+  review_sprint:
+    description: "Parallel multi-perspective code review: security, performance, architecture"
+    mode: batch
+    communication: both
+    input:
+      branch_name: string
+      context: string
+    flow:
+      # Pre-load project context for the architecture reviewer (zero-LLM-cost).
+      - load_context:
+          memory_tool: memory_retrieve
+          load:
+            - key: "project:architecture"
+              as: project_architecture
+            - key: "project:overview"
+              as: project_overview
+
+      # All three reviewers run concurrently — each gets the same branch context
+      # but focuses on their domain. They write to unique output_as keys.
+      - parallel:
+          - agent: security_reviewer
+            input: |
+              Review this branch for security vulnerabilities.
+
+              Branch: {branch_name}
+              CONTEXT: {context}
+
+              Use file_grep to actively search for dangerous patterns.
+              Read the changed files with file_read.
+              Report all findings with severity and specific recommendations.
+            output_as: security_review
+            on_error:
+              strategy: retry
+              max_retries: 2
+
+          - agent: performance_reviewer
+            input: |
+              Review this branch for performance issues.
+
+              Branch: {branch_name}
+              CONTEXT: {context}
+
+              Look for N+1 queries, unbounded loops, blocking async I/O,
+              unnecessary allocations, and missing indexes.
+            output_as: performance_review
+            on_error:
+              strategy: retry
+              max_retries: 2
+
+          - agent: architecture_reviewer
+            input: |
+              Review this branch for architecture consistency.
+
+              Branch: {branch_name}
+              CONTEXT: {context}
+
+              PROJECT ARCHITECTURE:
+              {project_architecture}
+
+              PROJECT OVERVIEW:
+              {project_overview}
+
+              Check for pattern violations, circular deps, and interface breakage.
+            output_as: architecture_review
+            on_error:
+              strategy: retry
+              max_retries: 2
+
+      # Synthesizer consolidates all three reviews into one verdict
+      - agent: review_synthesizer
+        input: |
+          Synthesize these three parallel code reviews into a consolidated verdict.
+
+          SECURITY REVIEW:
+          {security_review}
+
+          PERFORMANCE REVIEW:
+          {performance_review}
+
+          ARCHITECTURE REVIEW:
+          {architecture_review}
+
+          Branch: {branch_name}
+          CONTEXT: {context}
+
+          Apply the approval rules strictly. Output the consolidated review.
+        output_as: review_summary
+        on_error:
+          strategy: retry
+          max_retries: 2
+
+      # Persist review findings for the CTO (zero-LLM-cost).
+      - save_context:
+          memory_tool: memory_store
+          save:
+            "task:review_findings": "{review_summary}"

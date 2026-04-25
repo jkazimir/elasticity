@@ -1,0 +1,144 @@
+# Ralph Wiggum Loop Pattern
+# ==========================
+#
+# The Ralph Loop is an iterative technique where the same prompt is fed to a
+# worker agent repeatedly. Each iteration, the agent sees only its own previous
+# output — not external feedback — and self-corrects toward completion.
+#
+# "I'm in a loop. I'm in a loop. I'm in a loop." — Ralph Wiggum
+#
+# Structural distinction from iterative_refinement.yaml:
+#   - The worker receives the SAME template every loop iteration
+#   - The worker does NOT see the evaluator's feedback — it self-diagnoses
+#     from its own previous output against the acceptance criteria
+#   - The evaluator exists only to gate loop exit (via completion_score)
+#   - max_iterations: 10 (vs 5 in iterative_refinement) because convergence
+#     without external feedback is typically slower
+#
+# Full pipeline: plan → ralph_loop → review
+# This is the only example demonstrating a complete plan-loop-review pipeline.
+#
+# To adapt this template:
+#   1. Replace {task} with your specific task or add more input fields
+#   2. Adjust max_iterations (default 10) for your expected convergence speed
+#   3. Adjust the until threshold (default 0.9) for stricter/looser exit
+#   4. Add tools to worker or reviewer for retrieval, code execution, etc.
+
+agent_types:
+  planner:
+    model: anthropic/claude-opus-4-7
+    system_prompt: "You are a precise task planner. Decompose a task into clear, measurable acceptance criteria that an AI agent can use to self-evaluate its own work. Output a numbered list of specific, testable criteria."
+    rules:
+      - "Be concrete and measurable — avoid vague language like 'good' or 'adequate'"
+      - "Include both functional requirements and quality requirements"
+      - "Limit to 5–8 criteria to keep evaluation tractable"
+    tools: []
+
+  worker:
+    model: anthropic/claude-sonnet-4-6
+    system_prompt: "You are a diligent worker agent operating in a Ralph Loop. Each iteration, you receive the task, acceptance criteria, and your previous output. You must review your prior work, identify gaps against the criteria, and produce a complete improved version. You receive no external feedback — your only signal is your own previous output."
+    rules:
+      - "Review your previous work critically before producing a new version"
+      - "Explicitly check each acceptance criterion and address any gaps you find"
+      - "Produce a complete, standalone output each iteration — never a diff or patch"
+    tools: []
+
+  evaluator:
+    model: anthropic/claude-haiku-4-5
+    system_prompt: "You are a precise evaluator. Score how completely a piece of work satisfies a set of acceptance criteria on a scale from 0.0 (nothing satisfied) to 1.0 (all criteria fully met)."
+    rules:
+      - "Score 0.9 or above only when all criteria are genuinely met"
+      - "Be consistent across iterations — the same quality should yield the same score"
+    output_schema:
+      completion_score: float
+      reasoning: string
+    tools: []
+
+  reviewer:
+    model: anthropic/claude-sonnet-4-6
+    system_prompt: "You are a final reviewer. Apply a polish pass to work that has converged through iterative self-refinement: fix remaining rough edges, improve clarity, and ensure the output fully satisfies the original task."
+    rules:
+      - "Preserve the substance of the converged work — do not rewrite it wholesale"
+      - "Address clarity, flow, and completeness issues only"
+    tools: []
+
+tools: {}
+
+orchestrations:
+  ralph_loop:
+    description: "Plan a task, iteratively self-refine work using the Ralph Loop (agent sees only its own previous output), then review the converged result"
+    input:
+      task: string
+    communication: message_passing
+    flow:
+      # ── Phase 1: Plan ─────────────────────────────────────────────────────────
+      # The planner decomposes {task} into measurable acceptance criteria.
+      # These criteria serve both the worker (for self-diagnosis) and the
+      # evaluator (for scoring) — they are the single source of truth.
+      - agent: planner
+        input: |
+          Decompose this task into clear, measurable acceptance criteria:
+
+          Task: {task}
+        output_as: acceptance_criteria
+
+      # ── Phase 2: Ralph Loop ───────────────────────────────────────────────────
+      # The worker is seeded with an initial attempt before entering the loop,
+      # ensuring {work} is defined when the loop begins.
+      - agent: worker
+        input: |
+          Produce your first complete attempt at this task. There is no previous work yet.
+
+          Task: {task}
+
+          Acceptance criteria:
+          {acceptance_criteria}
+
+          Previous work:
+          (none — this is your first attempt)
+        output_as: work
+
+      # The loop feeds the worker the same template every iteration.
+      # KEY: The worker sees only {work} (its own previous output) — never {evaluation}.
+      # The evaluator scores each attempt and gates exit via completion_score.
+      - loop:
+          max_iterations: 10
+          until: "completion_score >= 0.9"
+          body:
+            - agent: worker
+              input: |
+                Review your previous work against the acceptance criteria and produce an improved version.
+
+                Task: {task}
+
+                Acceptance criteria:
+                {acceptance_criteria}
+
+                Your previous work:
+                {work}
+              output_as: work
+            - agent: evaluator
+              input: |
+                Score how completely this work satisfies the acceptance criteria.
+
+                Acceptance criteria:
+                {acceptance_criteria}
+
+                Work to evaluate:
+                {work}
+              output_as: evaluation
+
+      # ── Phase 3: Review ───────────────────────────────────────────────────────
+      # The reviewer applies a final polish pass to the converged output.
+      - agent: reviewer
+        input: |
+          Apply a final polish pass to this converged work.
+
+          Original task: {task}
+
+          Acceptance criteria:
+          {acceptance_criteria}
+
+          Converged work:
+          {work}
+        output_as: final_output

@@ -1,0 +1,79 @@
+agent_types:
+  classifier:
+    model: openai/granite4:350m
+    system_prompt: |
+      You are a message classifier. Analyze user messages and classify them into one of these categories:
+      - research: Questions requiring web search or information lookup
+      - file: Requests to read, write, or list files
+      - general: General conversation or questions
+      
+      Respond with ONLY the category name (research, file, or general).
+    max_tokens: 100
+
+  researcher:
+    model: openai/gemma4:26b
+    system_prompt: |
+      You are a research assistant. Use web_search to find information, then provide a clear,
+      concise answer based on the search results.
+    tools: [web_search, http_request]
+    max_tokens: 2000
+
+  file_assistant:
+    model: openai/gemma4:26b
+    system_prompt: |
+      You are a file assistant. Help users read, write, and list files. Be careful with file paths
+      and always confirm before writing files.
+    tools: [file_read, file_write, file_list]
+    max_tokens: 2000
+
+  generalist:
+    model: openai/granite4:350m
+    system_prompt: |
+      You are a helpful assistant. Answer questions conversationally and be friendly.
+    max_tokens: 2000
+
+tools:
+  web_search:
+    builtin: web_search
+    config:
+      provider: brave
+      api_key_env: BRAVE_API_KEY
+
+  http_request:
+    builtin: http_request
+
+  file_read:
+    builtin: file_read
+
+  file_write:
+    builtin: file_write
+
+  file_list:
+    builtin: file_list
+
+orchestrations:
+  assistant:
+    description: A conversational assistant that routes to specialist agents
+    mode: conversational
+    response_key: response
+    input:
+      message: string
+    flow:
+      - agent: classifier
+        input: "{message}"
+        output_as: intent
+      - route:
+          condition: "{intent}"
+          cases:
+            research:
+              - agent: researcher
+                input: "{message}"
+                output_as: response
+            file:
+              - agent: file_assistant
+                input: "{message}"
+                output_as: response
+            general:
+              - agent: generalist
+                input: "{message}"
+                output_as: response

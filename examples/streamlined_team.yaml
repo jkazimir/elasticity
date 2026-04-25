@@ -1,0 +1,441 @@
+# Streamlined Team Orchestration
+#
+# Lean flow:
+#   context bootstrap → architecture → HITM plan approval →
+#   implementation+QA loop (retries on failure) → persist + summarize
+#
+# Phase 0: Archivist checks memory for a high_level_overview. If missing or stale,
+#          it reads the codebase directly and generates one, then loads request-relevant
+#          feature context for the architect.
+# The architect explores the codebase and produces a design plan before any code is written.
+# A human approves (or gives feedback on) the plan; if rejected, the architect revises.
+# The developer receives the approved plan and focuses solely on implementation.
+# QA verifies the implementation against the architect's plan and definition of done.
+#
+# Memory keys:
+#   definition_of_done    — quality standards refined each sprint
+#   high_level_overview   — app capabilities + feature index, updated each sprint
+#   feature:<name>        — per-feature detail docs, loaded on demand
+#   architecture_notes    — cross-cutting patterns, design decisions, and conventions
+#
+# Memory persists in ./streamlined_memory.db across runs.
+
+agent_types:
+  archivist:
+    model: anthropic/claude-sonnet-4-6
+    system_prompt: |
+      You are the Archivist — keeper of the team's institutional memory. You manage all
+      persistent knowledge about the application and its quality standards.
+
+      Memory keys you own:
+      - "definition_of_done"  — quality standards refined each sprint
+      - "architecture_notes"  — cross-cutting architectural decisions, patterns, conventions,
+                                and design rationale accumulated across sprints; updated after
+                                each sprint from the architect's plan and what was built
+      - "high_level_overview" — app capabilities + feature index; format:
+            # Application Overview
+            [summary paragraphs]
+            ## Feature Index
+            feature:<name> → [one-line description]
+            ...
+      - "feature:<name>"      — per-feature detail docs (e.g. feature:cli, feature:runtime)
+
+      When bootstrapping a missing or stale overview:
+      1. Use file_list to map the top-level project structure.
+      2. Identify major subsystems (directories, modules, packages).
+      3. For each subsystem, use file_read and file_grep to understand its purpose,
+         key files, patterns, and how it connects to the rest of the system.
+      4. Store the high_level_overview and one feature:* key per major subsystem
+         using memory_store.
+
+      When loading context for an incoming request:
+      1. Retrieve "high_level_overview" to get the feature index.
+      2. Identify which feature:* keys are relevant to the request.
+      3. Retrieve those keys and combine them into a concise app_context for the
+         architect — enough to understand what already exists.
+
+      When updating memory after a sprint (Phase 3):
+      - Refine "definition_of_done" based on QA findings and plan patterns.
+      - Update "high_level_overview" if new capabilities or subsystems were introduced.
+      - Update or create feature:* keys for every subsystem touched by the sprint.
+      - Produce a concise sprint summary (what was built, files changed, QA outcome).
+
+      Write memory values for clarity — other agents read them verbatim.
+    tools:
+      - memory_store
+      - memory_retrieve
+      - file_read
+      - file_list
+      - file_grep
+    tool_policies:
+      file_read: allow
+      file_list: allow
+      file_grep: allow
+    max_tokens: 8192
+    max_tool_rounds: 30
+
+  architect:
+    model: anthropic/claude-opus-4-7
+    system_prompt: |
+      You are the Architect — you think in systems, not lines of code. Your job is to
+      understand the big picture of the codebase and produce a clear design plan so the
+      developer can focus entirely on implementation without architectural overhead.
+
+      Memory key you own:
+      - "architecture_notes" — persistent cross-sprint record of architectural decisions,
+        cross-cutting patterns, conventions, known constraints, and design rationale.
+        Read it at the start of every sprint; the Archivist will update it after each sprint
+        based on your plan and what was actually built.
+
+      Workflow:
+      1. Use memory_retrieve to load "architecture_notes" and orient yourself before
+         exploring — it captures decisions already made and patterns to follow.
+      2. Read the request carefully. Use ask_user to clarify any ambiguities before
+         committing to a design.
+      3. Use the provided app_context (feature summaries from the Archivist) to understand
+         existing capabilities. Only explore the codebase (file_list, file_grep, file_read)
+         for specifics not covered by the context.
+      4. Use web_search to research relevant patterns or libraries if needed.
+      5. Produce a structured Architectural Plan:
+         - Files to modify or create (with purpose)
+         - Design decisions and rationale
+         - Patterns and conventions to follow from the existing codebase
+         - Step-by-step implementation guide for the developer
+         - Edge cases or risks to watch for
+    tools:
+      - memory_retrieve
+      - file_read
+      - file_list
+      - file_grep
+      - web_search
+      - http_request
+      - ask_user
+    tool_policies:
+      file_read: allow
+      file_list: allow
+      file_grep: allow
+      web_search: allow
+      http_request: ask
+      ask_user: allow
+    max_tokens: 8192
+    max_tool_rounds: 30
+
+  developer:
+    model: anthropic/claude-sonnet-4-6
+    system_prompt: |
+      You are the Developer — skilled, pragmatic, and focused on delivering exactly
+      what the architectural plan describes.
+
+      Workflow:
+      1. Read the request and architect's plan carefully.
+      2. Follow the architect's plan — it has already accounted for codebase structure
+         and design decisions. Do not re-explore the codebase from scratch.
+      3. Implement changes using file_edit (preferred) or file_write for new files.
+      4. Run tests or verification with shell if appropriate.
+      5. Report: what changed, where, and how to verify it.
+    tools:
+      - file_read
+      - file_write
+      - file_edit
+      - file_list
+      - file_grep
+      - shell
+      - web_search
+      - http_request
+    tool_policies:
+      file_read: allow
+      file_list: allow
+      file_grep: allow
+      file_write: ask
+      file_edit: ask
+      shell: ask
+      web_search: allow
+      http_request: ask
+    max_tokens: 16384
+    max_tool_rounds: 50
+
+  qa_tester:
+    model: anthropic/claude-haiku-4-5
+    system_prompt: |
+      You are the QA Tester — meticulous, literal-minded, and constitutionally
+      incapable of letting ambiguity slide.
+
+      - Validate the implementation against the architect's plan and definition of done.
+      - Use memory_retrieve to load "definition_of_done" and apply it alongside the plan.
+      - Use file_read, file_list, and file_grep to inspect the actual implementation.
+        Do not trust the developer's summary alone — verify.
+      - Write a formal test report with PASS/FAIL per plan item and per DoD item.
+
+      TEST REPORT FORMAT:
+        ## QA Test Report
+        **Story**: [request title]
+        **Tester**: QA
+
+        ### Plan Alignment
+        | # | Plan Item | Result | Notes |
+        |---|-----------|--------|-------|
+        | 1 | [item from architect's plan] | ✅ PASS / ❌ FAIL | [observation] |
+
+        ### Definition of Done
+        | # | DoD Item | Result | Notes |
+        |---|----------|--------|-------|
+        | 1 | [item] | ✅ PASS / ❌ FAIL | [observation] |
+
+        ### Summary
+        **All Criteria Met**: Yes / No
+        **Recommendation**: Accept Increment / Return to Developer with Findings
+    tools:
+      - file_read
+      - file_list
+      - file_grep
+      - memory_retrieve
+    output_schema:
+      all_criteria_met: boolean
+      test_report: string
+    max_tokens: 8192
+    max_tool_rounds: 20
+
+tools:
+  memory_store:
+    description: "Store team knowledge in persistent memory"
+    callable: "elasticity.tools.memory.store"
+    config:
+      db_path: "./streamlined_memory.db"
+    parameters:
+      key:
+        type: string
+        required: true
+        description: "Memory key (e.g., definition_of_done)"
+      value:
+        type: string
+        required: true
+        description: "Content to store"
+
+  memory_retrieve:
+    description: "Retrieve team memory by key or semantic query"
+    callable: "elasticity.tools.memory.retrieve"
+    config:
+      db_path: "./streamlined_memory.db"
+    parameters:
+      query:
+        type: string
+        required: true
+        description: "Key or semantic query to search for relevant memory"
+
+  file_read:
+    builtin: file_read
+
+  file_write:
+    builtin: file_write
+
+  file_edit:
+    builtin: file_edit
+
+  file_list:
+    builtin: file_list
+
+  file_grep:
+    builtin: file_grep
+
+  shell:
+    builtin: shell
+
+  web_search:
+    builtin: web_search
+    config:
+      provider: duckduckgo
+
+  http_request:
+    builtin: http_request
+
+  ask_user:
+    builtin: ask_user
+
+orchestrations:
+  streamlined_sprint:
+    description: |
+      Lean product team: context bootstrap → architecture → HITM plan approval →
+      implementation → QA validation → persist. Architect designs before code is written;
+      human approves the plan. Persists definition_of_done and architecture_notes across
+      runs for compounding quality.
+    mode: conversational
+    communication: both
+    response_key: sprint_summary
+    input:
+      message: string
+    input_handling:
+      mode: queue
+      queue_limit: 10
+    flow:
+      # ─────────────────────────────────────────────────────────────────────
+      # Phase 0: Context Bootstrap
+      # Archivist checks memory. If no overview exists, it reads the codebase
+      # and generates one. Then it loads request-relevant context for the architect.
+      # ─────────────────────────────────────────────────────────────────────
+
+      - agent: archivist
+        input: |
+          Load the application context relevant to the incoming request.
+
+          INCOMING REQUEST: {message}
+
+          Steps:
+          1. Use memory_retrieve to load "high_level_overview".
+          2. If the key does not exist or is empty, bootstrap from the codebase:
+             - Use file_list to map the project structure.
+             - Use file_read and file_grep to understand each major subsystem.
+             - Store the overview as "high_level_overview" using memory_store.
+             - Store one "feature:<name>" key per major subsystem.
+          3. Based on the feature index and the request, identify the most relevant
+             feature:* keys (typically 1–3). Use memory_retrieve to load each.
+          4. Combine the overview summary and retrieved feature details into a concise
+             app_context — enough for the architect to understand what already exists.
+
+          Output only the combined app_context. Do not include memory housekeeping details.
+        output_as: app_context
+
+      # ─────────────────────────────────────────────────────────────────────
+      # Phase 1: Architecture + Approval
+      # Architect reads the request and app_context, explores specifics, and
+      # produces a plan. Human approves before any code is written.
+      # ─────────────────────────────────────────────────────────────────────
+
+      - agent: architect
+        input: |
+          Produce an architectural plan for the following request.
+
+          APPLICATION CONTEXT (existing features and capabilities):
+          {app_context}
+
+          REQUEST: {message}
+
+          Steps:
+          1. Use memory_retrieve to load "architecture_notes" — recall prior decisions and
+             patterns before exploring.
+          2. Use ask_user to clarify any ambiguities before committing to a design.
+          3. Use the app_context above to understand the codebase; use file_list, file_grep,
+             and file_read only for specifics not covered there.
+          4. Use web_search to research relevant approaches if needed.
+          5. Output a structured Architectural Plan covering:
+             - Files to modify or create (with purpose)
+             - Design decisions and rationale
+             - Patterns and conventions to follow from the existing codebase
+             - Step-by-step implementation guide for the developer
+             - Edge cases or risks to watch for
+        output_as: architect_plan
+
+      - approve:
+          content: |
+            ## Architectural Plan for Review
+
+            **Request**: {message}
+
+            **Architect's Plan**:
+            {architect_plan}
+          message: "Review the architectural plan before implementation begins. Approve or provide feedback:"
+          output_as: approved_plan
+          on_reject: retry_previous
+          max_retries: 3
+
+      # ─────────────────────────────────────────────────────────────────────
+      # Phase 2: Implementation + QA Loop
+      # Developer implements; QA validates against the architect's plan and DoD.
+      # If QA fails, the developer receives findings and retries — up to 3 cycles.
+      # ─────────────────────────────────────────────────────────────────────
+
+      - loop:
+          max_iterations: 3
+          until: "all_criteria_met"
+          body:
+            - agent: developer
+              input: |
+                Implement the following request according to the approved architectural plan.
+
+                REQUEST: {message}
+
+                ARCHITECT'S PLAN:
+                {architect_plan}
+
+                PREVIOUS QA FINDINGS (empty on first pass; address these if present):
+                {qa_result}
+
+                Steps:
+                1. Follow the architect's plan — it has already mapped the codebase and
+                   made design decisions. Trust it.
+                2. Use file_read to review specific files before editing if needed.
+                3. Use file_edit (preferred) or file_write to implement changes.
+                4. Use shell to run tests or verification if appropriate.
+                5. Summarize what you built, what files changed, and how to verify.
+              output_as: dev_output
+
+            - agent: qa_tester
+              input: |
+                Validate the implementation against the architect's plan and definition of done.
+
+                REQUEST: {message}
+
+                ARCHITECT'S PLAN:
+                {architect_plan}
+
+                DEVELOPER'S IMPLEMENTATION REPORT:
+                {dev_output}
+
+                Use memory_retrieve to load "definition_of_done" and apply it alongside the plan.
+                Use file_read, file_list, and file_grep to inspect the actual implementation.
+                Do not trust the developer's summary alone — verify.
+                Verify that the implementation matches the architect's plan.
+
+                Write a formal QA Test Report with PASS/FAIL per plan item and per DoD item.
+
+                Output:
+                - all_criteria_met: true only if every plan item and DoD item passes
+                - test_report: your full formatted test report
+              output_as: qa_result
+
+      # ─────────────────────────────────────────────────────────────────────
+      # Phase 3: Persist Knowledge + Sprint Summary
+      # ─────────────────────────────────────────────────────────────────────
+
+      - agent: archivist
+        input: |
+          The sprint is complete. Update all persistent memory and produce a sprint summary.
+
+          REQUEST: {message}
+
+          DEVELOPER'S IMPLEMENTATION REPORT:
+          {dev_output}
+
+          QA REPORT AND FINDINGS:
+          {qa_result}
+
+          ARCHITECT'S PLAN:
+          {architect_plan}
+
+          Actions:
+          1. Use memory_retrieve to load "definition_of_done".
+             Update it based on plan patterns and QA findings from this sprint.
+             If it does not yet exist, create it from the QA criteria used this sprint.
+             Store the updated value with memory_store.
+
+          2. Use memory_retrieve to load "architecture_notes".
+             Distill any new architectural decisions, patterns, conventions, or constraints
+             that emerged from the architect's plan or the implementation this sprint.
+             Merge them into the existing notes (do not discard prior entries).
+             If the key does not yet exist, create it from the architect's plan.
+             Store the updated value with memory_store.
+
+          3. Use memory_retrieve to load "high_level_overview".
+             If this sprint introduced new capabilities or subsystems, update the overview
+             summary and feature index to reflect them. Store the updated value if changed.
+
+          4. Based on the implementation report, identify which feature:* keys were touched.
+             Use memory_retrieve to load each, then update with knowledge gained this sprint
+             (new patterns, changed interfaces, new files). Create new feature:* keys for
+             any subsystems that didn't previously have one. Store any updated values.
+
+          5. Output a concise sprint summary:
+             - What was built (1–2 sentences)
+             - Key files changed or created
+             - QA outcome (pass/fail, any notable findings)
+             Do NOT include memory update details or raw QA report content.
+        output_as: sprint_summary

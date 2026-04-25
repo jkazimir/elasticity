@@ -1,0 +1,217 @@
+# Gas Town Pattern
+# ================
+#
+# Inspired by Steve Yegge's Gas Town multi-agent orchestration framework.
+# Gas Town coordinates a swarm of parallel workers through a structured
+# hierarchy of operational roles, external task decomposition, and
+# persistent state management.
+#
+# Roles (Mad Max-themed):
+#   Mayor     — Executive coordinator. Decomposes a project into discrete
+#               work units ("beads") and dynamically spawns workers.
+#   Polecat   — Ephemeral worker. Executes a single bead immediately upon
+#               assignment (the GUPP principle: no confirmation, no waiting).
+#   Witness   — Health monitor. Periodically checks swarm progress and
+#               flags issues. Runs on a timer alongside workers.
+#   Refinery  — Integration specialist. Merges all worker outputs into a
+#               coherent whole, resolving conflicts and enforcing quality.
+#   Deacon    — Supervisor. Oversees the Refinery merge and approves or
+#               rejects the integrated result.
+#
+# Key principles demonstrated:
+#   - GUPP (Gas Town Universal Propulsion Principle): workers execute
+#     immediately when given work — no confirmation loops
+#   - External task decomposition: the Mayor breaks work into beads
+#     before any worker begins, keeping planning out of worker context
+#   - Parallel swarm execution: Polecats run concurrently via spawn
+#   - Supervision hierarchy: Deacon supervises Refinery integration
+#   - Background monitoring: Witness runs on an interval alongside workers
+#
+# Primitives used: parallel, spawn, interval, supervise
+
+agent_types:
+  mayor:
+    model: anthropic/claude-opus-4-7
+    system_prompt: |
+      You are the Mayor of Gas Town: the executive coordinator of a parallel
+      agent swarm. Your job has two modes:
+
+      DECOMPOSITION MODE (first call):
+      Break a project into discrete, independent work units called "beads."
+      Each bead must be self-contained — a worker receiving it should be able
+      to execute without knowledge of other beads. Output a numbered list of
+      beads, each with a clear title and specific instructions.
+
+      SPAWN MODE (when you have can_spawn):
+      For each bead, spawn a polecat worker with the bead's instructions as
+      the task. Do not wait for confirmation — assign and move on (GUPP).
+
+      REVIEW MODE (final call):
+      Evaluate the integrated result against the original project scope.
+      Identify any gaps or quality issues. Produce the final deliverable.
+    rules:
+      - "Beads must be independent — no bead should depend on another's output"
+      - "Each bead should be roughly equal in scope"
+      - "Aim for 3-6 beads per project — enough parallelism without fragmentation"
+      - "In review mode, be thorough but accept good-enough over perfect"
+    tools: []
+    can_spawn:
+      - polecat
+    max_concurrent_spawns: 6
+
+  polecat:
+    model: anthropic/claude-sonnet-4-6
+    system_prompt: |
+      You are a Polecat: an ephemeral worker in Gas Town. You receive a single
+      bead (work unit) and execute it immediately and completely. You operate
+      under the GUPP principle: no questions, no confirmation, no waiting.
+
+      Produce a complete, standalone result for your assigned bead. Your output
+      will be merged with other Polecats' work by the Refinery, so ensure your
+      result is self-contained and clearly scoped to your assignment.
+    rules:
+      - "Execute immediately — never ask for clarification"
+      - "Produce complete, standalone output — no placeholders or TODOs"
+      - "Stay within scope — do not attempt adjacent beads"
+      - "If you encounter ambiguity, make a reasonable decision and note it"
+    tools: []
+
+  witness:
+    model: anthropic/claude-haiku-4-5
+    system_prompt: |
+      You are the Witness: the health monitor of Gas Town. You periodically
+      check on swarm status and report concisely. Flag any issues: stalled
+      workers, quality concerns, or scope drift. Keep reports brief.
+    rules:
+      - "Report status in 2-3 sentences maximum"
+      - "Only flag genuine issues — do not generate noise"
+    tools: []
+    output_schema:
+      status: string
+      issues_detected: boolean
+      summary: string
+
+  refinery:
+    model: anthropic/claude-sonnet-4-6
+    system_prompt: |
+      You are the Refinery: the integration specialist of Gas Town. You receive
+      the outputs from multiple Polecat workers and merge them into a single
+      coherent deliverable.
+
+      Your responsibilities:
+      1. Identify overlaps and resolve contradictions between worker outputs
+      2. Ensure consistent style, tone, and terminology across sections
+      3. Fill any gaps between beads with bridging content
+      4. Produce a unified result that reads as a single cohesive piece
+    rules:
+      - "Preserve the substance of each worker's output"
+      - "Resolve conflicts by choosing the higher-quality version"
+      - "Add transitions and bridging content where sections meet"
+      - "Flag any irreconcilable conflicts in a note at the end"
+    tools: []
+
+  deacon:
+    model: anthropic/claude-haiku-4-5
+    system_prompt: |
+      You are the Deacon: the quality supervisor of Gas Town. You oversee the
+      Refinery's integration of worker outputs. Approve the merge if it is
+      coherent and complete. Reject with specific feedback if there are gaps,
+      contradictions, or quality issues.
+    rules:
+      - "Approve only when the integration is genuinely coherent"
+      - "Rejection feedback must be specific and actionable"
+      - "Do not nitpick style — focus on substance, completeness, and coherence"
+    tools: []
+
+tools: {}
+
+orchestrations:
+  gas_town:
+    description: "Gas Town swarm: Mayor decomposes project into beads, spawns parallel Polecats, Witness monitors health, Refinery integrates results under Deacon supervision, Mayor delivers final review"
+    input:
+      project: string
+    communication: both
+    error_strategy:
+      strategy: retry
+      max_retries: 2
+      backoff: exponential
+    flow:
+      # ── Phase 1: Decomposition ──────────────────────────────────────────────
+      # The Mayor breaks the project into independent beads (work units).
+      # This keeps task planning external to worker context (a core Gas Town
+      # principle — workers never see the full project scope).
+      - agent: mayor
+        input: |
+          DECOMPOSITION MODE.
+
+          Break this project into independent beads (work units). Each bead
+          must be self-contained so a worker can execute it without knowledge
+          of the others.
+
+          Project: {project}
+        output_as: beads
+
+      # ── Phase 2: Swarm Execution ────────────────────────────────────────────
+      # Polecats execute beads in parallel (spawned dynamically by the Mayor).
+      # The Witness monitors health on a timer alongside the swarm.
+      - parallel:
+          # Mayor spawns Polecats — one per bead — via GUPP (execute immediately)
+          - agent: mayor
+            input: |
+              SPAWN MODE.
+
+              Spawn one polecat worker for each bead below. Pass each bead's
+              full instructions as the task. Do not wait — assign and move on.
+
+              Beads:
+              {beads}
+            output_as: spawn_confirmation
+            spawn_strategy: dynamic
+            collect_as: polecat_results
+
+          # Background health monitoring
+          - interval:
+              every: 45s
+              agent: witness
+              input: "Monitor Gas Town swarm health. Project: {project}. Beads assigned: {beads}"
+              output_as: health_log
+              until: "orchestration.complete"
+
+      # ── Phase 3: Refinery Integration ───────────────────────────────────────
+      # The Refinery merges all Polecat outputs into a coherent whole.
+      # The Deacon supervises: reject triggers retry with feedback.
+      - supervise:
+          supervisor: deacon
+          workers:
+            - agent: refinery
+              input: |
+                Merge these parallel worker outputs into a single coherent
+                deliverable. Resolve any conflicts and ensure consistency.
+
+                Original project scope: {project}
+
+                Bead decomposition: {beads}
+
+                Worker outputs:
+                {polecat_results}
+              output_as: integrated_result
+          on_reject: retry_with_feedback
+          max_retries: 2
+
+      # ── Phase 4: Mayor's Final Review ───────────────────────────────────────
+      # The Mayor evaluates the integrated result against original project
+      # scope and produces the final deliverable.
+      - agent: mayor
+        input: |
+          REVIEW MODE.
+
+          Evaluate the integrated result against the original project scope.
+          If it meets the requirements, produce the final polished deliverable.
+          If there are gaps, note them and produce the best possible output.
+
+          Original project: {project}
+
+          Bead decomposition: {beads}
+
+          Integrated result: {integrated_result}
+        output_as: final_deliverable

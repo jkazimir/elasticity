@@ -1,0 +1,35 @@
+# Simple pipeline example: research a topic, then write about it
+
+agent_types:
+  researcher:
+    model: openai/gpt-4o
+    system_prompt: "You are a research agent that finds accurate information on any topic."
+    rules:
+      - "Always cite sources"
+      - "Prefer primary sources over secondary"
+    tools: []
+
+  writer:
+    model: openai/gpt-4o
+    system_prompt: "You are a skilled technical writer who creates clear, engaging content."
+    rules:
+      - "Write in a clear, accessible style"
+      - "Use examples to illustrate concepts"
+    tools: []
+
+tools:
+  # No tools in this simple example
+
+orchestrations:
+  research_and_write:
+    description: "Research a topic, then write an article about it"
+    input:
+      topic: string
+    communication: message_passing
+    flow:
+      - agent: researcher
+        input: "Research the topic: {topic}. Provide a comprehensive overview with key points."
+        output_as: research_results
+      - agent: writer
+        input: "Write a clear, engaging article about {topic} using this research: {research_results}"
+        output_as: article

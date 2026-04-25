@@ -1,0 +1,63 @@
+# Interval/supervisor example: long-running pipeline with periodic monitoring
+
+agent_types:
+  data_processor:
+    model: openai/gpt-4o
+    system_prompt: "You process data in batches and report progress."
+    rules:
+      - "Report progress after each batch"
+    tools: []
+
+  monitor:
+    model: openai/gpt-4o-mini
+    system_prompt: "You monitor the progress of long-running tasks and summarize status."
+    rules:
+      - "Be concise in status updates"
+      - "Alert on any issues detected"
+    tools: []
+
+  supervisor:
+    model: openai/gpt-4o
+    system_prompt: "You supervise worker agents and ensure quality standards."
+    rules:
+      - "Approve work that meets standards"
+      - "Request improvements when needed"
+    tools: []
+
+  worker:
+    model: openai/gpt-4o
+    system_prompt: "You perform assigned tasks and report results."
+    rules:
+      - "Follow instructions precisely"
+      - "Report any issues encountered"
+    tools: []
+
+tools: []
+
+orchestrations:
+  monitored_pipeline:
+    description: "Long-running pipeline with periodic monitoring and supervisor oversight"
+    input:
+      task: string
+    communication: both
+    flow:
+      - parallel:
+          # Main work
+          - sequence:
+              - agent: data_processor
+                input: "Process the following task: {task}"
+                output_as: result
+          # Background monitor running every 30 seconds
+          - interval:
+              every: 30s
+              agent: monitor
+              input: "Check progress and summarize current status. Task: {task}"
+              output_as: status_log
+              until: "orchestration.complete"
+      - supervise:
+          supervisor: supervisor
+          workers:
+            - agent: worker
+              input: "Review and finalize the result: {result}"
+          on_reject: retry_with_feedback
+          max_retries: 3

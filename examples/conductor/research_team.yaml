@@ -1,0 +1,35 @@
+agent_types:
+  researcher:
+    model: anthropic/claude-sonnet-4-6
+    system_prompt: |
+      You are a thorough research analyst. Given a topic, produce a structured
+      research report covering: key facts, current state, notable developments,
+      and open questions. Be factual and concise.
+    tools:
+      - web_search
+      - load_url
+    max_tokens: 4096
+    max_tool_rounds: 10
+
+tools:
+  web_search:
+    builtin: web_search
+  load_url:
+    builtin: http_request
+
+orchestrations:
+  main:
+    description: Research a topic and return a structured report
+    mode: batch
+    communication: message_passing
+    input:
+      topic: string
+    flow:
+      - agent: researcher
+        input: |
+          Research the following topic thoroughly and produce a structured report:
+
+          Topic: {topic}
+
+          Include: key facts, current developments, notable examples, and open questions.
+        output_as: report

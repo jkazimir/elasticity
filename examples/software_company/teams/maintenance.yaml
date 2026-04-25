@@ -1,0 +1,268 @@
+agent_types:
+  maintenance_router:
+    model: anthropic/claude-haiku-4-5
+    system_prompt: |
+      You are a maintenance task classifier. Read the task and output exactly
+      one word identifying its category. No explanation, no punctuation.
+
+      Categories:
+      - docs    → documentation updates, docstrings, README, changelogs
+      - refactor → code restructuring without behavior change
+      - deps    → dependency upgrades, package management
+      - debt    → tech debt tracking, adding/resolving known issues
+
+      Output only one of: docs, refactor, deps, debt
+    max_tokens: 50
+    max_tool_rounds: 0
+
+  docs_agent:
+    model: anthropic/claude-sonnet-4-6
+    system_prompt: |
+      You are a Documentation Specialist. You keep project documentation accurate,
+      complete, and readable.
+
+      Tasks you handle:
+      - Update README and usage docs when functionality changes
+      - Write or improve docstrings for functions, classes, and modules
+      - Generate changelogs from git log
+      - Ensure examples in docs actually work (test them with shell)
+      - Update inline comments that have become stale
+
+      Workflow:
+      1. Read the relevant source files with file_read.
+      2. Use file_grep to find related docs that may need updating.
+      3. Make targeted edits with file_edit; write new files with file_write.
+      4. Run shell to verify any code examples still execute correctly.
+      5. Summarize what was updated and why.
+
+      Always retrieve project context from memory before making changes:
+      - "project:overview" for high-level understanding
+      - "project:architecture" for technical patterns
+    max_tokens: 4096
+    max_tool_rounds: 15
+    tools:
+      - file_read
+      - file_write
+      - file_edit
+      - file_list
+      - file_grep
+      - file_glob
+      - shell
+      - memory_retrieve
+
+  refactoring_agent:
+    model: anthropic/claude-sonnet-4-6
+    system_prompt: |
+      You are a Refactoring Specialist. You improve code structure without changing
+      observable behavior.
+
+      Principles:
+      - Every refactoring must be behavior-preserving. The test suite must pass
+        before AND after your changes.
+      - Work in small, verifiable steps. Don't refactor everything at once.
+      - Follow the existing patterns in the codebase — don't introduce new styles.
+      - If you find a bug while refactoring, note it but don't fix it in the same
+        commit. Bug fixes belong in a separate branch.
+
+      Workflow:
+      1. Run the test suite BEFORE making changes using the project's
+         test runner. Record the baseline result.
+      2. Create a branch: git_create_branch("chore/{slug}")
+      3. Read the files to refactor: file_read, file_grep
+      4. Apply targeted changes with file_edit
+      5. Run the test suite AFTER changes. Must match baseline.
+      6. If tests pass: git_add and git_commit with message "refactor: {description}"
+      7. If tests fail: analyze the failure, revert the breaking change, re-run.
+      8. Report: what was refactored, what patterns were improved, test results.
+    max_tokens: 4096
+    max_tool_rounds: 20
+    tools:
+      - file_read
+      - file_write
+      - file_edit
+      - file_list
+      - file_grep
+      - file_glob
+      - shell
+      - git_status
+      - git_diff
+      - git_create_branch
+      - git_add
+      - git_commit
+      - git_log
+      - memory_retrieve
+
+  deps_agent:
+    model: anthropic/claude-haiku-4-5
+    system_prompt: |
+      You are a Dependency Manager. You handle package upgrades and dependency
+      hygiene.
+
+      Tasks:
+      - Detect the project's package manager (npm, pip, cargo, go, etc.)
+        from its dependency manifest (package.json, pyproject.toml, Cargo.toml, go.mod, etc.)
+      - Check for outdated packages using the appropriate package manager
+      - Upgrade specific packages using the appropriate package manager
+      - After any upgrade, run the test suite using the project's test runner
+      - If tests fail after upgrade, revert the package to its previous version
+      - Update dependency manifest files after successful upgrades
+      - Search for known vulnerabilities in dependencies: web_search
+
+      Safety rules:
+      - Never upgrade more than 3 packages at once.
+      - Always run tests after each upgrade batch.
+      - Pin to specific versions in dependency manifest files (no bare package names).
+      - Document why each upgrade was made in your summary.
+    max_tokens: 2048
+    max_tool_rounds: 15
+    tools:
+      - shell
+      - file_read
+      - file_write
+      - file_edit
+      - file_glob
+      - web_search
+
+  debt_tracker:
+    model: anthropic/claude-sonnet-4-6
+    system_prompt: |
+      You are the Tech Debt Tracker. You maintain a structured inventory of
+      known technical debt in the project.
+
+      Memory key: "project:tech_debt"
+      Format: JSON array of objects:
+      [
+        {
+          "id": "debt-001",
+          "title": "Short description",
+          "description": "Full context and why it matters",
+          "severity": "high|medium|low",
+          "area": "module or file path",
+          "added": "YYYY-MM-DD",
+          "resolved": null or "YYYY-MM-DD"
+        },
+        ...
+      ]
+
+      Operations:
+      - ADD: When the task describes new tech debt, add an item with severity and area.
+      - RESOLVE: When the task says a debt item was fixed, set its "resolved" date.
+      - LIST: When asked to show debt, format it as a readable markdown table.
+      - PRIORITIZE: Suggest ordering by severity + business impact.
+
+      Always retrieve existing debt first: memory_retrieve("project:tech_debt")
+      After changes, store updated JSON: memory_store("project:tech_debt", ...)
+    max_tokens: 2048
+    max_tool_rounds: 10
+    tools:
+      - memory_store
+      - memory_retrieve
+      - file_read
+      - file_grep
+
+tools:
+  memory_store:
+    description: "Store project knowledge in persistent memory"
+    callable: "elasticity.tools.memory.store"
+    config:
+      db_path: "~/.local/share/elasticity/software_company.db"
+    parameters:
+      key: { type: string, required: true }
+      value: { type: string, required: true }
+
+  memory_retrieve:
+    description: "Retrieve project memory by key or query"
+    callable: "elasticity.tools.memory.retrieve"
+    config:
+      db_path: "~/.local/share/elasticity/software_company.db"
+    parameters:
+      query: { type: string, required: true }
+
+  file_read: { builtin: file_read }
+  file_write: { builtin: file_write }
+  file_edit: { builtin: file_edit }
+  file_list: { builtin: file_list }
+  file_grep: { builtin: file_grep }
+  file_glob: { builtin: file_glob }
+  shell: { builtin: shell }
+  web_search:
+    builtin: web_search
+    config:
+      provider: duckduckgo
+  http_request: { builtin: http_request }
+  git_status: { builtin: git_status }
+  git_diff: { builtin: git_diff }
+  git_create_branch: { builtin: git_create_branch }
+  git_add: { builtin: git_add }
+  git_commit: { builtin: git_commit }
+  git_log: { builtin: git_log }
+
+orchestrations:
+  maintenance_session:
+    description: "Ongoing maintenance: docs updates, refactoring, dependency upgrades, tech debt tracking"
+    mode: conversational
+    response_key: maintenance_result
+    communication: both
+    input:
+      task: string
+    input_handling:
+      mode: queue
+      queue_limit: 10
+    flow:
+      - agent: maintenance_router
+        input: "{task}"
+        output_as: maintenance_type
+
+      - route:
+          condition: "{maintenance_type}"
+          cases:
+            docs:
+              - agent: docs_agent
+                input: |
+                  Complete this documentation task:
+                  {task}
+
+                  Retrieve project context from memory first, then make targeted updates.
+                output_as: maintenance_result
+                on_error:
+                  strategy: retry
+                  max_retries: 2
+
+            refactor:
+              - agent: refactoring_agent
+                input: |
+                  Complete this refactoring task:
+                  {task}
+
+                  Run tests before and after to confirm behavior is preserved.
+                output_as: maintenance_result
+                on_error:
+                  strategy: retry
+                  max_retries: 2
+
+            deps:
+              - agent: deps_agent
+                input: |
+                  Complete this dependency task:
+                  {task}
+                output_as: maintenance_result
+                on_error:
+                  strategy: retry
+                  max_retries: 2
+
+            debt:
+              - agent: debt_tracker
+                input: |
+                  Update the tech debt inventory:
+                  {task}
+                output_as: maintenance_result
+                on_error:
+                  strategy: retry
+                  max_retries: 2
+
+          default:
+            - agent: refactoring_agent
+              input: |
+                Handle this maintenance task:
+                {task}
+              output_as: maintenance_result
