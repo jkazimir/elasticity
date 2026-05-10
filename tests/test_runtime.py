@@ -77,6 +77,69 @@ def test_context_manager_initial_input():
     assert formatted == "Message: output"  # messages (last in merge) override everything
 
 
+def test_format_input_dotted_dict():
+    """Dotted access resolves dict keys: {user.name} from {"name": "Ada"}."""
+    context = ContextManager("message_passing")
+    context.set_output("user", {"name": "Ada"})
+    assert context.format_input("Hi {user.name}") == "Hi Ada"
+
+
+def test_format_input_nested_dotted():
+    """Three-level dotted access resolves through nested dicts."""
+    context = ContextManager("shared_context")
+    context.set_shared("a", {"b": {"c": "deep"}})
+    assert context.format_input("{a.b.c}") == "deep"
+
+
+def test_format_input_dotted_object():
+    """Dotted access resolves object attributes via getattr."""
+    class _User:
+        name = "Ada"
+
+    context = ContextManager("message_passing")
+    context.set_output("user", _User())
+    assert context.format_input("Hello {user.name}") == "Hello Ada"
+
+
+def test_format_input_missing_dotted_segment():
+    """Missing dotted segments render as empty string, not raw template."""
+    context = ContextManager("message_passing")
+    context.set_output("user", {"name": "Ada"})
+    assert context.format_input("{user.email}") == ""
+    assert context.format_input("{missing.x.y}") == ""
+
+
+def test_format_input_mixed_flat_and_dotted():
+    """Flat and dotted variables resolve correctly in the same template."""
+    context = ContextManager("both")
+    context.set_shared("greeting", "Hello")
+    context.set_output("user", {"name": "Ada"})
+    assert context.format_input("{greeting} {user.name}") == "Hello Ada"
+
+
+def test_format_input_dotted_with_format_spec():
+    """Format specs and !r conversion work with dotted access."""
+    context = ContextManager("message_passing")
+    context.set_output("metrics", {"score": 0.876})
+    context.set_output("user", {"name": "Ada"})
+    assert context.format_input("{metrics.score:.2f}") == "0.88"
+    assert context.format_input("{user.name!r}") == "'Ada'"
+
+
+def test_format_input_hyphenated_flat_key_preserved():
+    """Hyphenated flat keys (e.g. {task-slug}) continue to work."""
+    context = ContextManager("message_passing")
+    context.set_output("task-slug", "my-feature")
+    assert context.format_input("{task-slug}") == "my-feature"
+
+
+def test_format_input_dotted_in_initial_input():
+    """Dotted access works against nested initial_input values."""
+    context = ContextManager("message_passing")
+    context.set_initial_input({"intent": {"kind": "research"}})
+    assert context.format_input("{intent.kind}") == "research"
+
+
 def test_tool_registry():
     """Test tool registry."""
     registry = ToolRegistry()

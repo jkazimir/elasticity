@@ -890,6 +890,15 @@ Input templates use Python-style `{variable_name}` interpolation. Available vari
 - **Loop magic variables:** Inside loop body steps: `{_loop_iteration}` (current 1-based iteration), `{_loop_max}` (configured max iterations)
 - **Interrupt context:** `{_interrupt_message}` — set when a graceful interrupt is delivered via `context`
 - **Condition special:** `orchestration.complete` in `until` — not a template variable; evaluated directly by the scheduler
+- **Dotted access:** Reach nested fields on dict or object outputs using `{var.field}` (e.g., `{user.name}`, `{review.score:.2f}`, `{plan.tasks}`). Each segment resolves via dict key first, then attribute. Missing segments render as empty string. Format specs (`:>10`, `:.2f`) and `!r` conversion are preserved.
+
+```yaml
+# Example: agent emits {"summary": "...", "score": 0.92} as output_as: review
+- agent: reviewer
+  output_as: review
+- agent: writer
+  input: "Score was {review.score:.2f}. Summary: {review.summary}"
+```
 
 ---
 

@@ -5,6 +5,53 @@ from typing import Any, Dict, Literal, Optional
 from ..config.schema import OrchestrationDefinition
 
 
+class _DotProxy:
+    """Wraps a value so dotted attribute access in str.format_map resolves
+    both dict keys and object attributes, enabling {a.b.c} in templates."""
+
+    __slots__ = ("_v",)
+
+    def __init__(self, v: Any) -> None:
+        self._v = v
+
+    def __getattr__(self, name: str) -> "_DotProxy":
+        if name == "_v":
+            raise AttributeError(name)
+        v = self._v
+        if isinstance(v, dict) and name in v:
+            return _DotProxy(v[name])
+        try:
+            return _DotProxy(getattr(v, name))
+        except AttributeError:
+            return _DotProxy("")
+
+    def __format__(self, spec: str) -> str:
+        v = "" if self._v is None else self._v
+        return format(v, spec)
+
+    def __str__(self) -> str:
+        return "" if self._v is None else str(self._v)
+
+    def __repr__(self) -> str:
+        return repr(self._v)
+
+    def __bool__(self) -> bool:
+        return bool(self._v)
+
+
+class _TemplateContext(dict):
+    """Mapping used with str.format_map that wraps values in _DotProxy and
+    returns an empty proxy for any missing key."""
+
+    def __getitem__(self, key: str) -> _DotProxy:
+        if dict.__contains__(self, key):
+            return _DotProxy(dict.__getitem__(self, key))
+        return _DotProxy("")
+
+    def __missing__(self, key: str) -> _DotProxy:
+        return _DotProxy("")
+
+
 class ContextManager:
     """Manages inter-agent communication context."""
 
@@ -40,12 +87,8 @@ class ContextManager:
             context.update(self.messages)
         context.update(kwargs)
 
-        class _DefaultStr(dict):
-            def __missing__(self, key: str) -> str:
-                return ""
-
         try:
-            return template.format_map(_DefaultStr(context))
+            return template.format_map(_TemplateContext(context))
         except Exception:
             return template
 

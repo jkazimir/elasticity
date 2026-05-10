@@ -256,7 +256,7 @@ class ToolCallEntry(BaseModel):
     tool: str = Field(..., description="Name of the registered tool to invoke")
     parameters: Dict[str, Any] = Field(
         default_factory=dict,
-        description="Tool parameters. String values support {variable} template interpolation.",
+        description="Tool parameters. String values support {variable} and dotted {var.field} template interpolation.",
     )
     output_as: Optional[str] = Field(
         None, description="Context variable name to store the tool result",
@@ -369,7 +369,7 @@ class ToolCallStep(BaseModel):
         ...,
         description=(
             "Configuration with 'tool' + 'parameters' (single tool) or 'calls' (list of tools). "
-            "String parameters support {variable} template interpolation."
+            "String parameters support {variable} and dotted {var.field} template interpolation."
         ),
     )
 
